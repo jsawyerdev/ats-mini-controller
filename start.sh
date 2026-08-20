@@ -4,7 +4,7 @@
 # otherwise fails silently with "device reports readiness to read but
 # returned no data" or an empty /api/status.
 #
-# Author: James Sawyer / JSLabs - https://labs.jamessawyer.co.uk/monitoring/
+# Author: James Sawyer / JSLabs - https://www.jamessawyer.co.uk/ | https://labs.jamessawyer.co.uk/
 set -euo pipefail
 cd "$(dirname "$0")"
 

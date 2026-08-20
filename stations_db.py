@@ -12,7 +12,7 @@ Normalized schema (one row per broadcast):
     language    str   - language code, only meaningful for SW
     source      str   - "eibi" | "fcc" | "ofcom" | "ised" | <custom source name>
 
-Author: James Sawyer / JSLabs - https://labs.jamessawyer.co.uk/monitoring/
+Author: James Sawyer / JSLabs - https://www.jamessawyer.co.uk/ | https://labs.jamessawyer.co.uk/
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """Tests for cw_decoder.py.
 
-Author: James Sawyer / JSLabs - https://labs.jamessawyer.co.uk/monitoring/
+Author: James Sawyer / JSLabs - https://www.jamessawyer.co.uk/ | https://labs.jamessawyer.co.uk/
 """
 
 from __future__ import annotations

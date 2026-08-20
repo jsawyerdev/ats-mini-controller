@@ -9,7 +9,7 @@ tools - fldigi, CwGet - are standalone GUI apps, not embeddable libraries),
 so this is a small local implementation on top of numpy/scipy, which are
 already dependencies.
 
-Author: James Sawyer / JSLabs - https://labs.jamessawyer.co.uk/monitoring/
+Author: James Sawyer / JSLabs - https://www.jamessawyer.co.uk/ | https://labs.jamessawyer.co.uk/
 """
 
 from __future__ import annotations

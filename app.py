@@ -1,7 +1,7 @@
 """FastAPI backend: serves the station browser UI, tunes the ATS Mini over
 USB serial, and streams live RSSI/SNR telemetry to the browser.
 
-Author: James Sawyer / JSLabs - https://labs.jamessawyer.co.uk/monitoring/
+Author: James Sawyer / JSLabs - https://www.jamessawyer.co.uk/ | https://labs.jamessawyer.co.uk/
 """
 
 from __future__ import annotations

@@ -5,7 +5,7 @@ retuning the radio (e.g. clicking a station) just changes what comes out,
 since this is a dumb continuous copy, not something that needs to know
 about frequencies at all.
 
-Author: James Sawyer / JSLabs - https://labs.jamessawyer.co.uk/monitoring/
+Author: James Sawyer / JSLabs - https://www.jamessawyer.co.uk/ | https://labs.jamessawyer.co.uk/
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@
 
 A local web app that controls an [ATS Mini](https://esp32-si4732.github.io/ats-mini/) (ESP32-S3 + Si4732 shortwave/AM/FM receiver) over USB, with a searchable 50,000+ station database, live signal scanning, and an automatic Morse code (CW) decoder.
 
-Author: **James Sawyer / JSLabs** — [labs.jamessawyer.co.uk/monitoring](https://labs.jamessawyer.co.uk/monitoring/)
+Author: **James Sawyer / JSLabs** — [jamessawyer.co.uk](https://www.jamessawyer.co.uk/) | [labs.jamessawyer.co.uk](https://labs.jamessawyer.co.uk/)
 
 ![Station browser: 50,000+ stations, live meter, click to tune](docs/screenshots/stations.png)
 

@@ -4,7 +4,7 @@ Protocol reference: https://esp32-si4732.github.io/ats-mini/remote.html
 Single-character commands drive the receiver; the 't' command toggles a
 continuous CSV telemetry stream (frequency, RSSI, SNR, etc.).
 
-Author: James Sawyer / JSLabs - https://labs.jamessawyer.co.uk/monitoring/
+Author: James Sawyer / JSLabs - https://www.jamessawyer.co.uk/ | https://labs.jamessawyer.co.uk/
 """
 
 from __future__ import annotations

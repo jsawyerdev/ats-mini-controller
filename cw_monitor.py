@@ -12,7 +12,7 @@ starts immediately (still locked on the same frequency) - a long-running
 transmission comes out as consecutive log entries rather than one that grows
 forever.
 
-Author: James Sawyer / JSLabs - https://labs.jamessawyer.co.uk/monitoring/
+Author: James Sawyer / JSLabs - https://www.jamessawyer.co.uk/ | https://labs.jamessawyer.co.uk/
 """
 
 from __future__ import annotations
