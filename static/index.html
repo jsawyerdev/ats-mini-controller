@@ -1,0 +1,576 @@
+<!doctype html>
+<!-- James Sawyer / JSLabs - https://labs.jamessawyer.co.uk/monitoring/ -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ATS Mini Controller</title>
+<style>
+  :root {
+    --navy-dk: #061024;
+    --navy: #0c1a38;
+    --navy-lt: #14264f;
+    --panel: #0f2050;
+    --orange: #ff8a1e;
+    --orange-dim: #b5621a;
+    --amber: #ffb347;
+    --text: #d9e2f5;
+    --text-dim: #7c8bb0;
+    --green: #3ddc84;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", sans-serif;
+    margin: 0;
+    background: var(--navy-dk);
+    color: var(--text);
+  }
+  header {
+    padding: 14px 18px;
+    background: linear-gradient(180deg, var(--navy-lt), var(--navy));
+    border-bottom: 2px solid var(--orange-dim);
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  header h1 {
+    font-size: 15px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--orange);
+    margin: 0 16px 0 0;
+    font-weight: 700;
+  }
+  input, select {
+    background: var(--navy-dk);
+    color: var(--text);
+    border: 1px solid var(--navy-lt);
+    border-radius: 4px;
+    padding: 7px 10px;
+    font-size: 13px;
+  }
+  input:focus, select:focus { outline: 1px solid var(--orange); border-color: var(--orange); }
+  button {
+    background: var(--orange-dim);
+    color: var(--navy-dk);
+    border: none;
+    border-radius: 4px;
+    padding: 8px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: var(--orange); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .vol-btn { padding: 2px 8px; font-size: 14px; margin: 0 6px; }
+  input[type=text] { flex: 1; min-width: 220px; }
+  label.toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-dim); cursor: pointer; }
+  label.toggle input { accent-color: var(--orange); width: 15px; height: 15px; }
+
+  #meter {
+    display: flex;
+    gap: 24px;
+    padding: 14px 18px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--navy-lt);
+    font-family: "SF Mono", "Courier New", monospace;
+  }
+  #meter .stat { display: flex; flex-direction: column; gap: 2px; }
+  #meter .stat .label { font-size: 10px; letter-spacing: 0.08em; color: var(--text-dim); text-transform: uppercase; }
+  #meter .stat .value { font-size: 20px; color: var(--amber); text-shadow: 0 0 8px rgba(255,179,71,0.5); font-variant-numeric: tabular-nums; }
+  #meter #m-freq { color: var(--orange); font-size: 24px; text-shadow: 0 0 10px rgba(255,138,30,0.6); }
+
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    position: sticky; top: 0;
+    background: var(--navy);
+    color: var(--text-dim);
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 2px solid var(--orange-dim);
+  }
+  tbody td { padding: 7px 12px; border-bottom: 1px solid var(--navy); font-size: 13px; }
+  tbody tr:hover { background: var(--navy-lt); cursor: pointer; }
+  tbody tr.active-now { background: rgba(255, 138, 30, 0.08); }
+  tbody tr.active-now:hover { background: rgba(255, 138, 30, 0.18); }
+  tbody tr.tuned { outline: 1px solid var(--orange); background: rgba(255, 138, 30, 0.15); }
+
+  .band-SW { color: var(--amber); }
+  .band-AM { color: #7fc7ff; }
+  .band-FM { color: var(--green); }
+
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .dot.on { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .dot.off { background: var(--text-dim); }
+
+  .rssi-bar { display: inline-block; width: 50px; height: 6px; background: var(--navy-lt); border-radius: 3px; overflow: hidden; vertical-align: middle; margin-right: 6px; }
+  .rssi-bar > span { display: block; height: 100%; background: var(--green); }
+  .rssi-weak > span { background: var(--orange-dim); }
+  .rssi-val { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--text-dim); }
+
+  #pager { display: flex; align-items: center; gap: 12px; justify-content: center; padding: 12px; background: var(--panel); }
+  #page-label { font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+
+  #cw-panel { display: flex; align-items: center; gap: 12px; padding: 10px 18px; background: var(--navy); border-bottom: 1px solid var(--navy-lt); }
+  #cw-result { font-family: "SF Mono", "Courier New", monospace; font-size: 13px; color: var(--amber); }
+  #cw-result .miss { color: var(--text-dim); }
+
+  #tabs { display: flex; gap: 4px; }
+  .tab-btn {
+    background: transparent; color: var(--text-dim); border: 1px solid var(--navy-lt);
+    border-radius: 4px 4px 0 0; padding: 8px 16px; font-size: 12px; text-transform: uppercase;
+    letter-spacing: 0.05em; cursor: pointer; font-weight: 700;
+  }
+  .tab-btn.active { background: var(--navy-dk); color: var(--orange); border-bottom-color: var(--navy-dk); }
+
+  #stations-toolbar, #cw-toolbar {
+    padding: 14px 18px; background: linear-gradient(180deg, var(--navy-lt), var(--navy));
+    border-bottom: 2px solid var(--orange-dim); display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+  }
+  #cw-status { font-size: 13px; color: var(--text-dim); }
+  #cw-status.mode-locked { color: var(--green); }
+  #cw-status.mode-scanning { color: var(--amber); }
+
+  #cw-inprogress {
+    margin: 16px 18px; padding: 16px 20px; background: var(--panel); border: 1px solid var(--orange-dim);
+    border-radius: 6px; font-family: "SF Mono", "Courier New", monospace; font-size: 20px;
+  }
+  #cw-inprogress .cw-freq { color: var(--orange); font-size: 13px; display: block; margin-bottom: 6px; letter-spacing: 0.05em; }
+  #cw-inprogress .cw-text { color: var(--amber); text-shadow: 0 0 8px rgba(255,179,71,0.5); }
+  #cw-inprogress .cw-cursor { color: var(--amber); animation: blink 1s step-start infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  #cw-log { padding: 0 18px 18px; display: flex; flex-direction: column-reverse; }
+  .cw-entry {
+    padding: 10px 14px; margin-top: 8px; background: var(--navy); border-left: 3px solid var(--green);
+    border-radius: 0 4px 4px 0; font-family: "SF Mono", "Courier New", monospace; animation: slide-in 0.3s ease-out;
+  }
+  .cw-entry .cw-meta { font-size: 11px; color: var(--text-dim); letter-spacing: 0.05em; margin-bottom: 4px; }
+  .cw-entry .cw-body { color: var(--amber); font-size: 15px; }
+  @keyframes slide-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>ATS Mini &middot; Station Browser</h1>
+  <div id="tabs">
+    <button class="tab-btn active" data-tab="stations">Stations</button>
+    <button class="tab-btn" data-tab="cw">CW Monitor</button>
+  </div>
+</header>
+<div id="meter">
+  <div class="stat"><span class="label">Frequency</span><span class="value" id="m-freq">-</span></div>
+  <div class="stat"><span class="label">Band / Mode</span><span class="value" id="m-mode">-</span></div>
+  <div class="stat"><span class="label">RSSI</span><span class="value" id="m-rssi">-</span></div>
+  <div class="stat"><span class="label">SNR</span><span class="value" id="m-snr">-</span></div>
+  <div class="stat"><span class="label">Volume</span><span class="value">
+    <button id="vol-down" class="vol-btn">&minus;</button><span id="m-vol">-</span><button id="vol-up" class="vol-btn">+</button>
+  </span></div>
+  <div class="stat"><span class="label">Link</span><span class="value"><span id="m-link" class="dot off"></span><span id="m-link-txt">-</span></span></div>
+  <div class="stat"><span class="label">Audio to Mac</span><button id="passthrough-toggle" class="vol-btn" style="padding:4px 10px;">Off</button></div>
+</div>
+
+<div id="stations-view" class="tab-view">
+  <div id="stations-toolbar">
+    <input id="q" type="text" placeholder="Search name / country / language...">
+    <select id="band">
+      <option value="">All bands</option>
+      <option value="SW">Shortwave</option>
+      <option value="AM">AM (MW)</option>
+      <option value="FM">FM</option>
+    </select>
+    <label class="toggle"><input id="active-only" type="checkbox"> On air now</label>
+    <label class="toggle"><input id="audible-only" type="checkbox"> Audible only (scanned)</label>
+    <button id="scan-btn">Scan RSSI (visible)</button>
+    <span id="result-count" style="font-size:12px;color:var(--text-dim);"></span>
+  </div>
+  <table>
+    <thead><tr><th></th><th>Freq</th><th>Band</th><th>Name</th><th>Country</th><th>Language</th><th>On air (local)</th><th>RSSI</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div id="pager">
+    <button id="page-prev">&larr; Prev</button>
+    <span id="page-label"></span>
+    <button id="page-next">Next &rarr;</button>
+  </div>
+</div>
+
+<div id="cw-view" class="tab-view" hidden>
+  <div id="cw-toolbar">
+    <button id="cw-monitor-toggle">Start CW Monitor</button>
+    <span id="cw-status">Idle</span>
+    <button id="cw-listen-btn">One-shot: listen here</button>
+  </div>
+  <div id="cw-inprogress" hidden>
+    <span class="cw-freq"></span>
+    <span class="cw-text"></span>
+    <span class="cw-cursor">&#9608;</span>
+  </div>
+  <div id="cw-log"></div>
+</div>
+<script>
+const rowsEl = document.getElementById('rows');
+const qEl = document.getElementById('q');
+const bandEl = document.getElementById('band');
+const activeOnlyEl = document.getElementById('active-only');
+const audibleOnlyEl = document.getElementById('audible-only');
+const scanBtn = document.getElementById('scan-btn');
+const resultCountEl = document.getElementById('result-count');
+const pagePrevEl = document.getElementById('page-prev');
+const pageNextEl = document.getElementById('page-next');
+const pageLabelEl = document.getElementById('page-label');
+const volUpEl = document.getElementById('vol-up');
+const volDownEl = document.getElementById('vol-down');
+const cwListenBtn = document.getElementById('cw-listen-btn');
+const cwMonitorToggleBtn = document.getElementById('cw-monitor-toggle');
+const cwStatusEl = document.getElementById('cw-status');
+const cwInProgressEl = document.getElementById('cw-inprogress');
+const cwLogEl = document.getElementById('cw-log');
+const passthroughToggleBtn = document.getElementById('passthrough-toggle');
+const PAGE_SIZE = 500;
+let tunedFreq = null;
+let currentStations = [];
+let tuning = false;
+let pageOffset = 0;
+let pageTotal = 0;
+
+// Heuristic only: the SI4732's RSSI/SNR readings are noisy and threshold
+// choice is a judgment call, not a spec. rssi in dBuV, snr in dB.
+// SNR is only meaningful in FM: the underlying SI4735 chip/library reports
+// SNR=0 for AM/SW regardless of actual signal quality (a hardware/library
+// characteristic, confirmed against the firmware source, not a bug here),
+// so audibility falls back to RSSI alone outside FM.
+function isAudible(s) {
+  if (s.rssi === null || s.rssi === undefined) return false;
+  if (s.band !== 'FM') return s.rssi >= 10;
+  return s.rssi >= 10 || s.snr >= 3;
+}
+
+const DAY_ABBR = ['Su','Mo','Tu','We','Th','Fr','Sa']; // JS getUTCDay(): 0=Sun
+const DAY_INDEX = { Mo:1, Tu:2, We:3, Th:4, Fr:5, Sa:6, Su:0 };
+
+function fmtFreq(hz) {
+  if (hz >= 1e6) return (hz / 1e6).toFixed(3) + ' MHz';
+  return (hz / 1e3).toFixed(1) + ' kHz';
+}
+
+function parseTimeRange(tr) {
+  const m = /^(\d{4})-(\d{4})$/.exec((tr || '').trim());
+  if (!m) return null;
+  const toMin = s => (parseInt(s.slice(0, 2), 10) % 24) * 60 + parseInt(s.slice(2), 10);
+  return { start: toMin(m[1]), end: m[1] === '2400' ? 1440 : toMin(m[1]), stop: m[2] === '2400' ? 1440 : toMin(m[2]) };
+}
+
+function dayAllowed(daysCode, utcDay) {
+  const code = (daysCode || '').trim();
+  if (!code) return true; // blank = daily
+  if (/^[1-7]+$/.test(code)) {
+    // EiBi digit form: 1=Monday..7=Sunday
+    const jsDay = utcDay === 0 ? 7 : utcDay;
+    return code.includes(String(jsDay));
+  }
+  const tokens = code.match(/Mo|Tu|We|Th|Fr|Sa|Su/g);
+  if (!tokens || !tokens.length) return true; // unrecognized remark code: don't hide
+  if (code.includes('-') && tokens.length === 2) {
+    let a = DAY_INDEX[tokens[0]], b = DAY_INDEX[tokens[1]];
+    if (a <= b) return utcDay >= a && utcDay <= b;
+    return utcDay >= a || utcDay <= b;
+  }
+  return tokens.some(t => DAY_INDEX[t] === utcDay);
+}
+
+function isActiveNow(station) {
+  if (station.band !== 'SW') return true; // AM/FM broadcast license data has no hours; assume on-air
+  const range = parseTimeRange(station.time_range);
+  if (!range) return true; // unparseable / continuous entries: don't hide
+  const now = new Date();
+  const nowMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const inWindow = range.start <= range.stop
+    ? (nowMin >= range.start && nowMin < range.stop)
+    : (nowMin >= range.start || nowMin < range.stop);
+  if (!inWindow) return false;
+  return dayAllowed(station.days_code, now.getUTCDay());
+}
+
+function localTimeLabel(station) {
+  if (station.band !== 'SW') return 'Continuous';
+  const range = parseTimeRange(station.time_range);
+  if (!range) return station.time_range || 'Continuous';
+  const fmt = mins => {
+    const d = new Date();
+    d.setUTCHours(Math.floor(mins / 60), mins % 60, 0, 0);
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+  return `${fmt(range.start)}–${fmt(range.stop)}`;
+}
+
+function rssiCell(s) {
+  if (s.rssi === null || s.rssi === undefined) return '<span class="rssi-val">-</span>';
+  const pct = Math.max(4, Math.min(100, s.rssi));
+  const weak = !isAudible(s);
+  const snrLabel = s.band === 'FM' ? `${s.snr}dB` : 'n/a';
+  return `<span class="rssi-bar${weak ? ' rssi-weak' : ''}"><span style="width:${pct}%"></span></span>` +
+    `<span class="rssi-val">${s.rssi} / ${snrLabel}</span>`;
+}
+
+async function refresh() {
+  const params = new URLSearchParams({
+    q: qEl.value, band: bandEl.value, limit: PAGE_SIZE, offset: pageOffset,
+  });
+  const res = await fetch('/api/stations?' + params);
+  const data = await res.json();
+  currentStations = data.stations;
+  pageTotal = data.total;
+  const from = data.total === 0 ? 0 : pageOffset + 1;
+  const to = pageOffset + data.returned;
+  resultCountEl.textContent = `${from.toLocaleString()}-${to.toLocaleString()} of ${data.total.toLocaleString()}`;
+  pageLabelEl.textContent = `Page ${Math.floor(pageOffset / PAGE_SIZE) + 1} of ${Math.max(1, Math.ceil(data.total / PAGE_SIZE))}`;
+  pagePrevEl.disabled = pageOffset === 0;
+  pageNextEl.disabled = to >= data.total;
+  render();
+}
+
+function resetToFirstPage() {
+  pageOffset = 0;
+  refresh();
+}
+
+function textCell(text) {
+  const td = document.createElement('td');
+  td.textContent = text;
+  return td;
+}
+
+function render() {
+  rowsEl.innerHTML = '';
+  for (const s of currentStations) {
+    const active = isActiveNow(s);
+    if (activeOnlyEl.checked && !active) continue;
+    if (audibleOnlyEl.checked && !isAudible(s)) continue;
+    const tr = document.createElement('tr');
+    tr.className = (active ? 'active-now ' : '') + (tunedFreq === s.freq_hz ? 'tuned' : '');
+
+    const dotTd = document.createElement('td');
+    if (active) dotTd.innerHTML = '<span class="dot on" title="On air now"></span>';
+    tr.appendChild(dotTd);
+    tr.appendChild(textCell(fmtFreq(s.freq_hz)));
+    const bandTd = textCell(s.band);
+    bandTd.className = `band-${s.band}`;
+    tr.appendChild(bandTd);
+    // name/country/language come from downloaded regulator/EiBi data, not
+    // hand-authored by us - textContent (not innerHTML) so a stray "<" in
+    // one of those datasets can't inject markup into the page.
+    tr.appendChild(textCell(s.name));
+    tr.appendChild(textCell(s.country));
+    tr.appendChild(textCell(s.language));
+    tr.appendChild(textCell(localTimeLabel(s)));
+    const rssiTd = document.createElement('td');
+    rssiTd.innerHTML = rssiCell(s);
+    tr.appendChild(rssiTd);
+
+    tr.onclick = () => tune(s.freq_hz, s.band);
+    rowsEl.appendChild(tr);
+  }
+}
+
+async function tune(freq_hz, band) {
+  if (tuning) return; // a click mid-tune supersedes on the backend anyway; avoid piling up requests
+  tuning = true;
+  tunedFreq = freq_hz;
+  render();
+  try {
+    await fetch('/api/tune', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ frequency_hz: freq_hz, band }),
+    });
+  } finally {
+    tuning = false;
+  }
+}
+
+async function scanVisible() {
+  scanBtn.disabled = true;
+  const before = scanBtn.textContent;
+  const targets = currentStations
+    .filter(s => activeOnlyEl.checked ? isActiveNow(s) : true)
+    .map(s => ({ freq_hz: s.freq_hz, band: s.band }));
+  scanBtn.textContent = `Scanning ${Math.min(targets.length, 200)} stations... (may take a few minutes)`;
+  try {
+    await fetch('/api/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stations: targets }),
+    });
+  } finally {
+    scanBtn.disabled = false;
+    scanBtn.textContent = before;
+    refresh();
+  }
+}
+
+async function cwListen() {
+  cwListenBtn.disabled = true;
+  const before = cwListenBtn.textContent;
+  cwListenBtn.textContent = 'Listening (4s)...';
+  try {
+    const res = await fetch('/api/cw/listen', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    const r = await res.json();
+    if (r.is_cw) {
+      addCwLogEntry({ freq_hz: null, started_at: Date.now()/1000, text: r.text, morse: r.morse, wpm: r.wpm });
+    } else {
+      cwStatusEl.textContent = 'No CW detected in the last 4s';
+    }
+  } finally {
+    cwListenBtn.disabled = false;
+    cwListenBtn.textContent = before;
+  }
+}
+cwListenBtn.addEventListener('click', cwListen);
+
+// --- CW Monitor tab ---
+let cwMonitorRunning = false;
+let cwLogSeen = 0;
+
+function fmtClock(epochSeconds) {
+  return new Date(epochSeconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function addCwLogEntry(e) {
+  const div = document.createElement('div');
+  div.className = 'cw-entry';
+  const freqLabel = e.freq_hz ? fmtFreq(e.freq_hz) : 'manual';
+  const wpmLabel = e.wpm ? `${e.wpm.toFixed(0)} WPM` : '';
+  div.innerHTML = `<div class="cw-meta">${fmtClock(e.started_at)} &middot; ${freqLabel} ${wpmLabel ? '&middot; ' + wpmLabel : ''}</div>` +
+    `<div class="cw-body">${e.text || '(no readable text)'} <span style="color:var(--text-dim);font-size:11px;">${e.morse || ''}</span></div>`;
+  cwLogEl.prepend(div);
+}
+
+async function refreshCwMonitorState() {
+  const es = new EventSource('/api/cw/monitor/stream');
+  es.onmessage = (evt) => {
+    const s = JSON.parse(evt.data);
+    cwMonitorRunning = s.running;
+    cwMonitorToggleBtn.textContent = s.running ? 'Stop CW Monitor' : 'Start CW Monitor';
+
+    cwStatusEl.className = s.mode === 'locked' ? 'mode-locked' : s.mode === 'scanning' ? 'mode-scanning' : '';
+    if (s.mode === 'scanning') {
+      cwStatusEl.textContent = `Scanning ${s.current_freq_hz ? fmtFreq(s.current_freq_hz) : '...'}`;
+    } else if (s.mode === 'locked') {
+      cwStatusEl.textContent = `Locked on ${fmtFreq(s.current_freq_hz)} — decoding`;
+    } else {
+      cwStatusEl.textContent = 'Idle';
+    }
+
+    if (s.mode === 'locked' && s.in_progress_text !== undefined) {
+      cwInProgressEl.hidden = false;
+      cwInProgressEl.querySelector('.cw-freq').textContent = fmtFreq(s.current_freq_hz) + ' — live';
+      cwInProgressEl.querySelector('.cw-text').textContent = s.in_progress_text;
+    } else {
+      cwInProgressEl.hidden = true;
+    }
+
+    if (s.log && s.log.length > cwLogSeen) {
+      for (const e of s.log.slice(cwLogSeen)) addCwLogEntry(e);
+      cwLogSeen = s.log.length;
+    } else if (s.log && s.log.length < cwLogSeen) {
+      cwLogEl.innerHTML = '';
+      cwLogSeen = 0;
+      for (const e of s.log) addCwLogEntry(e);
+      cwLogSeen = s.log.length;
+    }
+  };
+}
+refreshCwMonitorState();
+
+cwMonitorToggleBtn.addEventListener('click', async () => {
+  cwMonitorToggleBtn.disabled = true;
+  try {
+    await fetch(cwMonitorRunning ? '/api/cw/monitor/stop' : '/api/cw/monitor/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+  } finally {
+    cwMonitorToggleBtn.disabled = false;
+  }
+});
+
+const tabButtons = document.querySelectorAll('.tab-btn');
+tabButtons.forEach(btn => btn.addEventListener('click', () => {
+  tabButtons.forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('stations-view').hidden = btn.dataset.tab !== 'stations';
+  document.getElementById('cw-view').hidden = btn.dataset.tab !== 'cw';
+}));
+
+qEl.addEventListener('input', () => { clearTimeout(window._t); window._t = setTimeout(resetToFirstPage, 250); });
+bandEl.addEventListener('change', resetToFirstPage);
+activeOnlyEl.addEventListener('change', render);
+audibleOnlyEl.addEventListener('change', render);
+scanBtn.addEventListener('click', scanVisible);
+volUpEl.addEventListener('click', () => fetch('/api/volume/up', { method: 'POST' }));
+volDownEl.addEventListener('click', () => fetch('/api/volume/down', { method: 'POST' }));
+
+let passthroughOn = false;
+async function refreshPassthroughStatus() {
+  const res = await fetch('/api/audio/passthrough/status');
+  const s = await res.json();
+  passthroughOn = s.running;
+  passthroughToggleBtn.textContent = passthroughOn ? 'On' : 'Off';
+  passthroughToggleBtn.style.background = passthroughOn ? 'var(--green)' : '';
+}
+passthroughToggleBtn.addEventListener('click', async () => {
+  passthroughToggleBtn.disabled = true;
+  try {
+    const res = await fetch(passthroughOn ? '/api/audio/passthrough/stop' : '/api/audio/passthrough/start', { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.json();
+      alert(err.detail || 'Could not toggle audio passthrough');
+    }
+  } finally {
+    passthroughToggleBtn.disabled = false;
+    refreshPassthroughStatus();
+  }
+});
+refreshPassthroughStatus();
+pagePrevEl.addEventListener('click', () => { pageOffset = Math.max(0, pageOffset - PAGE_SIZE); refresh(); });
+pageNextEl.addEventListener('click', () => { pageOffset += PAGE_SIZE; refresh(); });
+refresh();
+setInterval(refresh, 60000); // keep "on air now" state fresh
+
+const linkDot = document.getElementById('m-link');
+const linkTxt = document.getElementById('m-link-txt');
+const es = new EventSource('/api/status/stream');
+es.onmessage = (e) => {
+  const st = JSON.parse(e.data);
+  if (st.tuning) {
+    // Suppress the intermediate band hops a tune-in-progress produces —
+    // showing every one made the meter look like it was "skipping around".
+    document.getElementById('m-freq').textContent = 'Tuning...';
+    document.getElementById('m-mode').textContent = '-';
+    document.getElementById('m-rssi').textContent = '-';
+    document.getElementById('m-snr').textContent = '-';
+    linkDot.className = 'dot on';
+    linkTxt.textContent = 'Live';
+    return;
+  }
+  document.getElementById('m-freq').textContent = fmtFreq(st.frequency_hz);
+  document.getElementById('m-mode').textContent = `${st.band} / ${st.mode}`;
+  document.getElementById('m-rssi').textContent = st.rssi + ' dBuV';
+  // The SI4735 chip only computes SNR meaningfully in FM; it reports a flat
+  // 0 in AM/SW regardless of actual signal quality (see isAudible() above).
+  document.getElementById('m-snr').textContent = st.band === 'VHF' ? st.snr + ' dB' : 'n/a';
+  document.getElementById('m-vol').textContent = st.volume;
+  linkDot.className = 'dot on';
+  linkTxt.textContent = 'Live';
+};
+es.onerror = () => { linkDot.className = 'dot off'; linkTxt.textContent = 'Lost'; };
+</script>
+</body>
+</html>

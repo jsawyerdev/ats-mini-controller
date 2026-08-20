@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Runtime state, not source data - regenerated on first run / first scan
+data/rssi_cache.db
+
+# Raw regulator/schedule downloads used to build data/stations.db - large,
+# re-fetchable via the URLs in stations_db.py, not needed to run the app
+data/eibi_sked.csv
+data/fcc_fm_raw.txt
+data/fcc_am_raw.txt
+data/ofcom_fm.csv
+data/ofcom_am.csv
+data/.fcc_urls.txt
+
+# Firmware binaries - third-party, fetch fresh from the upstream releases
+# page rather than redistributing here (see README)
+firmware_update/
+
+.DS_Store
