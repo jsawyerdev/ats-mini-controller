@@ -4,6 +4,12 @@ A local web app that controls an [ATS Mini](https://esp32-si4732.github.io/ats-m
 
 Author: **James Sawyer / JSLabs** — [labs.jamessawyer.co.uk/monitoring](https://labs.jamessawyer.co.uk/monitoring/)
 
+![Station browser: 50,000+ stations, live meter, click to tune](docs/screenshots/stations.png)
+
+![Searching and filtering, with on-air stations highlighted](docs/screenshots/search-bbc.png)
+
+![CW Monitor tab scanning a beacon frequency live](docs/screenshots/cw-monitor.png)
+
 ## What it does
 
 - **Station browser**: 50,000+ shortwave, AM, and FM stations from EiBi (global shortwave schedules), the FCC (US/Canada AM+FM), and Ofcom (UK AM+FM). Search, filter by band, and see which shortwave broadcasts are on air right now based on your local time.
@@ -46,6 +52,32 @@ Source files aren't included in this repo (the FCC dumps alone are ~23MB); downl
 The firmware's serial protocol has no direct frequency-jump command — only relative "next band" / "next mode" stepping — so retuning across very different bands can take a few seconds and passes through intermediate bands visibly on the radio's own screen. That's a hardware/firmware limit, not something this app can fully hide.
 
 Decoding works by capturing audio, finding the CW tone's frequency (unknown in advance — it depends on the receiver's BFO offset), isolating it with a bandpass filter, extracting the on/off keying envelope, and converting the timing into dots, dashes, and text. No PyPI package does audio-to-Morse decoding well, so this part (`cw_decoder.py`) is a small local implementation on top of numpy/scipy, validated against synthetic Morse test signals in `test_cw_decoder.py`.
+
+## User guide
+
+### Browsing and tuning
+
+The Stations tab shows the full database, 500 rows per page, ordered by frequency. Type in the search box to filter by name, country, or language; use the band dropdown to narrow to shortwave, AM, or FM. Click any row and the physical radio retunes to that frequency — same-band clicks (e.g. two shortwave stations) are near-instant, since the firmware only needs a real band change when crossing between shortwave/AM and FM.
+
+The **On air now** checkbox filters shortwave listings to schedules that are currently active, converted from the database's UTC times into your browser's local time zone automatically. AM and FM entries are broadcast-license data with no schedule, so they're always treated as on air.
+
+The meter bar at the top is always live: current frequency, band/mode, RSSI, SNR (FM only — the receiver chip doesn't compute a usable SNR value in AM/SSB modes), volume with `+`/`-` buttons, and an audio passthrough toggle.
+
+### RSSI scanning
+
+Click **Scan RSSI (visible)** to measure real signal strength on whatever's currently filtered/visible (capped at 80 stations per scan, since each measurement needs a moment to settle). Once scanned, a station shows a signal-strength bar and its RSSI/SNR values, and the **Audible only** checkbox filters down to ones that measured as actually receivable — not just present in the database. Measurements persist across restarts, so repeated scans of different filters build up coverage over time instead of resetting.
+
+### CW Monitor
+
+The CW Monitor tab runs a background scan → lock → decode → release loop: it cycles a small set of known CW-heavy frequencies (propagation beacons with high duty cycles, ham calling frequencies), and the moment it detects real on/off keying it locks onto that frequency and decodes continuously, streaming the text live. When the signal goes quiet or fades below detection, that decode is pushed to the scrolling log with a timestamp, frequency, and WPM estimate, and scanning resumes.
+
+**One-shot: listen here** does a single ~4 second capture-and-decode on whatever frequency the radio is currently tuned to, without touching the tuning — useful to check a specific frequency you've navigated to manually from the Stations tab.
+
+A manual tune from the Stations tab always interrupts a running scan or CW hunt — background automation never fights you for control of the radio.
+
+### Audio passthrough
+
+The **Audio to Mac** toggle in the meter bar copies the USB audio interface's input straight to your computer's default output device in real time, so whatever the radio is tuned to is audible. It needs exclusive access to the input device, so it can't run at the same time as the CW monitor (starting one will ask you to stop the other first).
 
 ## Known limitations
 
