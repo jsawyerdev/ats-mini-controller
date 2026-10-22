@@ -78,6 +78,7 @@ def test_failed_direct_sampling_switch_reopens_device(monkeypatch) -> None:
     bridge._direct_sampling_active = True
     bridge._gain_db = radio_bridge.DEFAULT_GAIN_DB
     bridge._ppm = 0
+    bridge._applied_ppm = 0
     bridge._state_lock = threading.Lock()
 
     bridge._apply_frequency(98_800_000)
@@ -86,6 +87,32 @@ def test_failed_direct_sampling_switch_reopens_device(monkeypatch) -> None:
     assert reopened.sample_rate == IQ_SAMPLE_RATE
     assert reopened.center_freq == 98_800_000
     assert bridge._direct_sampling_active is False
+
+
+def test_unchanged_zero_ppm_is_not_reapplied() -> None:
+    class FakeSdr:
+        gain = 0.0
+        center_freq = 0
+
+        @property
+        def freq_correction(self) -> int:
+            return 0
+
+        @freq_correction.setter
+        def freq_correction(self, _: int) -> None:
+            raise AssertionError("unchanged PPM must not be written")
+
+    bridge = radio_bridge.RtlSdrBridge.__new__(radio_bridge.RtlSdrBridge)
+    bridge._sdr = FakeSdr()
+    bridge._direct_sampling_active = False
+    bridge._gain_db = radio_bridge.DEFAULT_GAIN_DB
+    bridge._ppm = 0
+    bridge._applied_ppm = 0
+    bridge._state_lock = threading.Lock()
+
+    bridge._apply_frequency(98_800_000)
+
+    assert bridge._sdr.center_freq == 98_800_000
 
 
 def test_stateful_am_agc_is_bounded_and_tracks_programme() -> None:

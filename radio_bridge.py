@@ -353,6 +353,7 @@ class RtlSdrBridge:
         # noise-relative measurements comparable between tuning operations.
         self._gain_db = DEFAULT_GAIN_DB
         self._ppm = 0
+        self._applied_ppm = 0
         self._sdr.gain = self._gain_db
         self._direct_sampling_active = False
 
@@ -421,7 +422,7 @@ class RtlSdrBridge:
                 self._sdr = RtlSdr(self._device_index)
                 self._sdr.sample_rate = IQ_SAMPLE_RATE
                 self._sdr.gain = gain_db
-                self._sdr.freq_correction = ppm
+                self._applied_ppm = 0
                 if needs_direct:
                     self._sdr.set_direct_sampling(DIRECT_SAMPLING_MODE)
             self._direct_sampling_active = needs_direct
@@ -430,7 +431,9 @@ class RtlSdrBridge:
                 "enabled" if needs_direct else "disabled",
                 frequency_hz,
             )
-        self._sdr.freq_correction = ppm
+        if ppm != self._applied_ppm:
+            self._sdr.freq_correction = ppm
+            self._applied_ppm = ppm
         if not needs_direct:
             self._sdr.gain = gain_db
         self._sdr.center_freq = frequency_hz
@@ -570,7 +573,7 @@ class RtlSdrBridge:
     def _run(self) -> None:
         with self._state_lock:
             freq, band, mode = self._frequency_hz, self._band, self._mode
-        self._apply_frequency(freq)
+        self._retune.set()
         prev_fm_sample: complex | None = None
         filter_zi: np.ndarray | None = None
         am_state = _AmDemodState()

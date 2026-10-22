@@ -171,6 +171,15 @@ served over the unauthenticated web interface; retrieve them from the Pi filesys
 
 ### Unreleased
 
+### 2.8.1 - 2026-10-22
+
+#### Fixed
+
+- Apply oscillator correction only when its value changes; pyrtlsdr rejects reapplying unchanged
+  zero PPM on the deployed dongle.
+- Run initial device configuration inside the supervised receiver loop so a native-driver error
+  is logged and retried instead of terminating the worker thread.
+
 ### 2.8.0 - 2026-10-22
 
 #### Added
