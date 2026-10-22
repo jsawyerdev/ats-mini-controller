@@ -174,6 +174,7 @@
   <div class="stat"><span class="label">Band / Mode</span><span class="value" id="m-mode">-</span></div>
   <div class="stat"><span class="label">Signal</span><span class="value" id="m-rssi">-</span></div>
   <div class="stat"><span class="label">Noise</span><span class="value" id="m-snr">-</span></div>
+  <div class="stat"><span class="label">Audio</span><span class="value" id="m-audio">-</span></div>
   <div class="stat"><span class="label">Volume</span><span class="value">
     <button id="vol-down" class="vol-btn">&minus;</button><span id="m-vol">-</span><button id="vol-up" class="vol-btn">+</button>
   </span></div>
@@ -258,7 +259,8 @@ let sortOrder = 'asc';
 // Six dB means roughly four times the nearby noise power. This avoids
 // classifying broadband noise as a station merely because gain is high.
 function isAudible(s) {
-  return s.signal_db !== null && s.signal_db !== undefined && s.signal_db >= 6;
+  return s.signal_db !== null && s.signal_db !== undefined && s.signal_db >= 6
+    && s.audio_dbfs !== null && s.audio_dbfs !== undefined && s.audio_dbfs >= -50;
 }
 
 const DAY_ABBR = ['Su','Mo','Tu','We','Th','Fr','Sa']; // JS getUTCDay(): 0=Sun
@@ -336,7 +338,7 @@ function rssiCell(s) {
   const pct = Math.max(4, Math.min(100, s.signal_db * (100 / 30)));
   const weak = !isAudible(s);
   return `<span class="rssi-bar${weak ? ' rssi-weak' : ''}"><span style="width:${pct}%"></span></span>` +
-    `<span class="rssi-val">+${s.signal_db} dB / ${s.noise_dbfs} dBFS</span>`;
+    `<span class="rssi-val">+${s.signal_db} dB RF / ${s.audio_dbfs ?? '-'} dBFS audio</span>`;
 }
 
 async function refresh() {
@@ -409,6 +411,12 @@ function render() {
 
 async function tune(freq_hz, band) {
   if (tuning) return; // a click mid-tune supersedes on the backend anyway; avoid piling up requests
+  if (scanInProgress) {
+    const stop = window.confirm('A signal scan is running. Stop it and tune this station?');
+    if (!stop) return;
+    scanAllRunning = false;
+    await fetch('/api/scan/cancel', { method: 'POST' });
+  }
   tuning = true;
   tunedFreq = freq_hz;
   render();
@@ -424,6 +432,7 @@ async function tune(freq_hz, band) {
 }
 
 async function scanVisible() {
+  scanInProgress = true;
   scanBtn.disabled = true;
   scanAllBtn.disabled = true;
   const before = scanBtn.textContent;
@@ -433,13 +442,23 @@ async function scanVisible() {
     .map(s => ({ freq_hz: s.freq_hz, band: s.band }));
   scanBtn.textContent = `Scanning ${Math.min(targets.length, 200)} stations... (may take a few minutes)`;
   try {
-    const response = await fetch('/api/scan', {
+    const request = fetch('/api/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ stations: targets }),
     });
+    const progressTimer = window.setInterval(async () => {
+      try {
+        const status = await fetch('/api/scan/status').then(result => result.json());
+        scanBtn.textContent = `Scanning ${status.processed}/${targets.length}`;
+      } catch (_) {
+        // The scan request remains authoritative; a missed progress poll is harmless.
+      }
+    }, 500);
+    const response = await request.finally(() => window.clearInterval(progressTimer));
     if (!response.ok) throw new Error(`Scan failed (${response.status})`);
   } finally {
+    scanInProgress = false;
     scanBtn.disabled = false;
     scanAllBtn.disabled = false;
     scanBtn.textContent = before;
@@ -448,6 +467,7 @@ async function scanVisible() {
 }
 
 let scanAllRunning = false;
+let scanInProgress = false;
 
 async function scanAll() {
   if (scanAllRunning) {
@@ -459,6 +479,7 @@ async function scanAll() {
   }
 
   scanAllRunning = true;
+  scanInProgress = true;
   scanBtn.disabled = true;
   seekBtn.disabled = true;
   const params = new URLSearchParams({
@@ -476,11 +497,20 @@ async function scanAll() {
     for (let offset = 0; offset < targets.length && scanAllRunning; offset += 200) {
       const batch = targets.slice(offset, offset + 200);
       scanAllBtn.textContent = `Stop scan (${completed}/${targets.length})`;
-      const response = await fetch('/api/scan', {
+      const request = fetch('/api/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ stations: batch }),
       });
+      const progressTimer = window.setInterval(async () => {
+        try {
+          const status = await fetch('/api/scan/status').then(result => result.json());
+          scanAllBtn.textContent = `Stop scan (${completed + status.processed}/${targets.length})`;
+        } catch (_) {
+          // The scan request remains authoritative; a missed progress poll is harmless.
+        }
+      }, 500);
+      const response = await request.finally(() => window.clearInterval(progressTimer));
       if (!response.ok) throw new Error(`Scan failed (${response.status})`);
       const result = await response.json();
       completed += result.scanned;
@@ -495,6 +525,7 @@ async function scanAll() {
     seekResultEl.textContent = `Scan failed after ${completed} frequencies.`;
   } finally {
     scanAllRunning = false;
+    scanInProgress = false;
     scanAllBtn.disabled = false;
     scanAllBtn.textContent = 'Scan all (filtered)';
     scanBtn.disabled = false;
@@ -557,7 +588,7 @@ async function findNextStrongest() {
       seekResultEl.textContent = 'No results from this batch - try again.';
       return;
     }
-    const clearSignals = data.results.filter(result => result.signal_db >= 6);
+    const clearSignals = data.results.filter(result => isAudible(result));
     if (clearSignals.length === 0) {
       seekResultEl.textContent = 'No channel in this batch was clearly above the noise floor.';
       seekOffset = batch.offset + 200 >= batch.total ? 0 : batch.offset + 200;
@@ -569,7 +600,7 @@ async function findNextStrongest() {
     await tune(best.freq_hz, station ? station.band : bandEl.value);
     seekResultEl.textContent =
       `Found: ${fmtFreq(best.freq_hz)}${station ? ' - ' + station.name : ''} `
-      + `(signal +${best.signal_db} dB, noise ${best.noise_dbfs} dBFS) `
+      + `(signal +${best.signal_db} dB, audio ${best.audio_dbfs} dBFS) `
       + `[${batch.offset}-${batch.offset + targets.length} of ${batch.total}]`;
     seekOffset = batch.offset + 200 >= batch.total ? 0 : batch.offset + 200;
     refresh();
@@ -783,6 +814,7 @@ es.onmessage = (e) => {
   document.getElementById('m-mode').textContent = `${st.band} / ${st.mode}`;
   document.getElementById('m-rssi').textContent = '+' + st.signal_db + ' dB';
   document.getElementById('m-snr').textContent = st.noise_dbfs + ' dBFS';
+  document.getElementById('m-audio').textContent = st.audio_dbfs + ' dBFS';
   document.getElementById('m-vol').textContent = st.volume;
   linkDot.className = 'dot on';
   linkTxt.textContent = 'Live';

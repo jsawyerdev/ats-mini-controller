@@ -3,14 +3,49 @@
 from __future__ import annotations
 
 import numpy as np
+import radio_bridge
 
-from radio_bridge import FM_CHANNEL_BW_HZ, IQ_SAMPLE_RATE, _estimate_signal
+from radio_bridge import FM_CHANNEL_BW_HZ, IQ_SAMPLE_RATE, _audio_level_dbfs, _estimate_signal
 
 
 def _noise(rng: np.random.Generator, samples: int, amplitude: float = 0.01) -> np.ndarray:
     return amplitude * (
         rng.standard_normal(samples) + 1j * rng.standard_normal(samples)
     ).astype(np.complex64)
+
+
+def test_audio_level_distinguishes_silence_from_demodulated_audio() -> None:
+    assert _audio_level_dbfs(np.zeros(1024, dtype=np.float32)) == -120
+    tone = np.sin(np.linspace(0, 20 * np.pi, 1024, endpoint=False)).astype(np.float32) * 0.1
+    assert -24 <= _audio_level_dbfs(tone) <= -22
+
+
+def test_failed_direct_sampling_switch_reopens_device(monkeypatch) -> None:
+    class BrokenSdr:
+        def set_direct_sampling(self, _: int) -> None:
+            raise OSError("mode switch failed")
+
+        def close(self) -> None:
+            pass
+
+    class ReopenedSdr:
+        sample_rate = 0
+        gain = 0.0
+        center_freq = 0
+
+    reopened = ReopenedSdr()
+    monkeypatch.setattr(radio_bridge, "RtlSdr", lambda _: reopened)
+    bridge = radio_bridge.RtlSdrBridge.__new__(radio_bridge.RtlSdrBridge)
+    bridge._device_index = 0
+    bridge._sdr = BrokenSdr()
+    bridge._direct_sampling_active = True
+
+    bridge._apply_frequency(98_800_000)
+
+    assert bridge._sdr is reopened
+    assert reopened.sample_rate == IQ_SAMPLE_RATE
+    assert reopened.center_freq == 98_800_000
+    assert bridge._direct_sampling_active is False
 
 
 def test_broadband_noise_is_not_a_station() -> None:

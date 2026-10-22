@@ -82,6 +82,7 @@ class RadioStatus:
     mode: str  # AM | FM | CW - demod actually in use
     signal_db: int  # in-channel power above the nearby RF noise floor
     noise_dbfs: int  # nearby RF noise floor, relative dBFS (diagnostic only)
+    audio_dbfs: int  # demodulated audio RMS; -120 means digital silence
     volume: int  # software playback gain, 0-100
     seq: int
 
@@ -178,6 +179,14 @@ def _estimate_signal(iq: np.ndarray, channel_bw_hz: float) -> tuple[int, int]:
     return signal_db, noise_dbfs
 
 
+def _audio_level_dbfs(audio: np.ndarray) -> int:
+    """RMS level of demodulated audio, with deterministic silence handling."""
+    if audio.size == 0:
+        return -120
+    rms = float(np.sqrt(np.mean(np.square(audio, dtype=np.float64))))
+    return int(round(np.clip(20 * np.log10(max(rms, 1e-6)), -120, 0)))
+
+
 def _decimate_lowpass(
     x: np.ndarray, sos: np.ndarray, zi: np.ndarray | None
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -255,6 +264,7 @@ class RtlSdrBridge:
     subscribers from one shared stream."""
 
     def __init__(self, device_index: int = 0) -> None:
+        self._device_index = device_index
         self._sdr = RtlSdr(device_index)
         self._sdr.sample_rate = IQ_SAMPLE_RATE
         # Fixed gain, not "auto": hardware AGC actively normalizes IQ power
@@ -295,7 +305,20 @@ class RtlSdrBridge:
     def _apply_frequency(self, frequency_hz: int) -> None:
         needs_direct = frequency_hz < DIRECT_SAMPLING_THRESHOLD_HZ
         if needs_direct != self._direct_sampling_active:
-            self._sdr.set_direct_sampling(DIRECT_SAMPLING_MODE if needs_direct else 0)
+            try:
+                self._sdr.set_direct_sampling(DIRECT_SAMPLING_MODE if needs_direct else 0)
+            except Exception:
+                # Some librtlsdr/R820T combinations apply the mode change but
+                # return LIBUSB_ERROR_IO while reinitialising the tuner. Reopen
+                # the device into a known state instead of retrying forever
+                # with a dead audio stream.
+                logger.warning("Reopening RTL-SDR after direct-sampling mode switch failed")
+                self._sdr.close()
+                self._sdr = RtlSdr(self._device_index)
+                self._sdr.sample_rate = IQ_SAMPLE_RATE
+                self._sdr.gain = DEFAULT_GAIN_DB
+                if needs_direct:
+                    self._sdr.set_direct_sampling(DIRECT_SAMPLING_MODE)
             self._direct_sampling_active = needs_direct
             logger.debug(
                 "direct sampling %s at %d Hz", "enabled" if needs_direct else "disabled", frequency_hz
@@ -392,7 +415,7 @@ class RtlSdrBridge:
         self._apply_frequency(freq)
         prev_fm_sample: complex | None = None
         filter_zi: np.ndarray | None = None
-        signal_history: deque[tuple[int, int]] = deque(maxlen=12)
+        signal_history: deque[tuple[int, int, int]] = deque(maxlen=12)
 
         while not self._stop.is_set():
             # The whole iteration is one try/except: this thread has no
@@ -422,9 +445,11 @@ class RtlSdrBridge:
                     audio, filter_zi = _demod_am(iq, filter_zi)
                     metrics = _estimate_signal(iq, AM_CHANNEL_BW_HZ)
 
-                signal_history.append(metrics)
+                audio_dbfs = _audio_level_dbfs(audio)
+                signal_history.append((*metrics, audio_dbfs))
                 signal_db = int(round(float(np.median([item[0] for item in signal_history]))))
                 noise_dbfs = int(round(float(np.median([item[1] for item in signal_history]))))
+                audio_dbfs = int(round(float(np.median([item[2] for item in signal_history]))))
 
                 with self._state_lock:
                     volume = self._volume
@@ -441,6 +466,7 @@ class RtlSdrBridge:
                         mode=mode,
                         signal_db=signal_db,
                         noise_dbfs=noise_dbfs,
+                        audio_dbfs=audio_dbfs,
                         volume=volume,
                         seq=self._seq,
                     )

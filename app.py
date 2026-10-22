@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "data" / "stations.db"
 SIGNAL_DB_PATH = Path(__file__).parent / "data" / "signal_cache.db"
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.4.0"
 
 COUNTRY_NAMES = {"CA": "Canada", "GB": "United Kingdom", "US": "United States"}
 
@@ -102,16 +102,21 @@ def _init_signal_store() -> None:
             freq_hz INTEGER PRIMARY KEY,
             signal_db INTEGER NOT NULL,
             noise_dbfs INTEGER NOT NULL,
+            audio_dbfs INTEGER,
             measured_at REAL NOT NULL
         )
         """)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(signal_measurements)")}
+    if "audio_dbfs" not in columns:
+        conn.execute("ALTER TABLE signal_measurements ADD COLUMN audio_dbfs INTEGER")
     conn.commit()
-    for freq_hz, signal_db, noise_dbfs, measured_at in conn.execute(
-        "SELECT freq_hz, signal_db, noise_dbfs, measured_at FROM signal_measurements"
+    for freq_hz, signal_db, noise_dbfs, audio_dbfs, measured_at in conn.execute(
+        "SELECT freq_hz, signal_db, noise_dbfs, audio_dbfs, measured_at FROM signal_measurements"
     ):
         signal_cache[freq_hz] = {
             "signal_db": signal_db,
             "noise_dbfs": noise_dbfs,
+            "audio_dbfs": audio_dbfs,
             "measured_at": measured_at,
         }
     conn.close()
@@ -127,9 +132,15 @@ def _persist_signal(freq_hz: int, entry: dict) -> None:
         with conn:
             conn.execute(
                 "INSERT OR REPLACE INTO signal_measurements "
-                "(freq_hz, signal_db, noise_dbfs, measured_at) "
-                "VALUES (?, ?, ?, ?)",
-                (freq_hz, entry["signal_db"], entry["noise_dbfs"], entry["measured_at"]),
+                "(freq_hz, signal_db, noise_dbfs, audio_dbfs, measured_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    freq_hz,
+                    entry["signal_db"],
+                    entry["noise_dbfs"],
+                    entry["audio_dbfs"],
+                    entry["measured_at"],
+                ),
             )
     finally:
         conn.close()
@@ -167,6 +178,8 @@ def _require_bridge() -> RtlSdrBridge:
 # whatever a manual click just landed on until it finished on its own — a
 # manual click should always win outright, not just for one instant.
 scan_cancel = threading.Event()
+scan_progress_lock = threading.Lock()
+scan_progress = {"running": False, "processed": 0, "total": 0}
 
 cw_monitor: CwMonitor | None = None
 
@@ -216,11 +229,17 @@ def list_stations(
             "last_checked": "m.measured_at",
         }
         sort_column = sort_columns[sort]
-        missing_last = (
-            f"{sort_column} IS NULL ASC, " if sort in {"signal", "last_checked"} else ""
-        )
+        if sort == "signal":
+            missing_last = (
+                "(m.audio_dbfs IS NULL OR m.audio_dbfs < -50) ASC, "
+                "m.signal_db IS NULL ASC, "
+            )
+        elif sort == "last_checked":
+            missing_last = "m.measured_at IS NULL ASC, "
+        else:
+            missing_last = ""
         rows = conn.execute(
-            "SELECT s.*, m.signal_db, m.noise_dbfs, m.measured_at "
+            "SELECT s.*, m.signal_db, m.noise_dbfs, m.audio_dbfs, m.measured_at "
             "FROM stations s LEFT JOIN signal_store.signal_measurements m "
             "ON m.freq_hz = s.freq_hz "
             f"{where} ORDER BY {missing_last}{sort_column} {direction}, "
@@ -257,8 +276,8 @@ def list_scan_targets(q: str = "", band: str = "", country: str = "") -> list[di
     where, params = _station_where(q, band, country)
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute(
-            f"SELECT s.freq_hz, s.band FROM stations s {where} "
-            "GROUP BY s.freq_hz, s.band ORDER BY s.freq_hz, s.band",
+            f"SELECT s.freq_hz, MIN(s.band) FROM stations s {where} "
+            "GROUP BY s.freq_hz ORDER BY s.freq_hz",
             params,
         ).fetchall()
     return [{"freq_hz": freq_hz, "band": row_band} for freq_hz, row_band in rows]
@@ -306,6 +325,12 @@ def cancel_scan() -> dict[str, bool]:
     return {"ok": True}
 
 
+@app.get("/api/scan/status")
+def scan_status() -> dict[str, int | bool]:
+    with scan_progress_lock:
+        return dict(scan_progress)
+
+
 @app.post("/api/scan")
 def scan(req: ScanRequest) -> dict:
     """Tune through candidates and record noise-relative signal strength. Each
@@ -318,6 +343,8 @@ def scan(req: ScanRequest) -> dict:
     results = []
     requested = len(req.stations)
     targets = req.stations
+    with scan_progress_lock:
+        scan_progress.update(running=True, processed=0, total=len(targets))
     started_at = time.monotonic()
     logger.info(
         "scan: starting %d targets (requested %d, settle_s=%.2f)",
@@ -325,12 +352,16 @@ def scan(req: ScanRequest) -> dict:
     )
     skipped_duplicate = 0
     skipped_mismatch = 0
+    processed_count = 0
     for target in targets:
         if scan_cancel.is_set():
             logger.info("scan: cancelled by a manual tune, stopping early")
             break  # a manual tune took over; stop dragging the radio around
         if target.freq_hz in seen:
             skipped_duplicate += 1
+            processed_count += 1
+            with scan_progress_lock:
+                scan_progress["processed"] = processed_count
             continue
         seen.add(target.freq_hz)
         radio.tune_to(target.freq_hz, target.band)
@@ -345,21 +376,31 @@ def scan(req: ScanRequest) -> dict:
                 "scan: skipped %d Hz - status mismatch (got %s)",
                 target.freq_hz, st.frequency_hz if st else None,
             )
+            processed_count += 1
+            with scan_progress_lock:
+                scan_progress["processed"] = processed_count
             continue
         entry = {
             "signal_db": st.signal_db,
             "noise_dbfs": st.noise_dbfs,
+            "audio_dbfs": st.audio_dbfs,
             "measured_at": time.time(),
         }
         signal_cache[target.freq_hz] = entry
         _persist_signal(target.freq_hz, entry)
         results.append({"freq_hz": target.freq_hz, **entry})
         logger.debug(
-            "scan: %d Hz signal=%d dB noise=%d dBFS",
+            "scan: %d Hz signal=%d dB noise=%d dBFS audio=%d dBFS",
             target.freq_hz,
             st.signal_db,
             st.noise_dbfs,
+            st.audio_dbfs,
         )
+        processed_count += 1
+        with scan_progress_lock:
+            scan_progress["processed"] = processed_count
+    with scan_progress_lock:
+        scan_progress.update(running=False, processed=processed_count)
     logger.info(
         "scan: done - %d measured, %d duplicate, %d mismatch, %.1fs elapsed, cancelled=%s",
         len(results), skipped_duplicate, skipped_mismatch,

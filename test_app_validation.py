@@ -63,7 +63,12 @@ def test_station_signal_sort_is_numeric_global_and_unscanned_last(tmp_path) -> N
         )
         conn.executemany(
             "INSERT INTO stations VALUES (?, 'FM', ?, 'GB', 'FM', '', '', 'English', 'test')",
-            [(90_000_000, "Unscanned"), (91_000_000, "Weak"), (92_000_000, "Strong")],
+            [
+                (90_000_000, "Unscanned"),
+                (91_000_000, "Weak"),
+                (92_000_000, "Strong"),
+                (94_000_000, "Silent spur"),
+            ],
         )
         conn.execute(
             "INSERT INTO stations VALUES "
@@ -72,12 +77,13 @@ def test_station_signal_sort_is_numeric_global_and_unscanned_last(tmp_path) -> N
     with sqlite3.connect(signal_path) as conn:
         conn.execute(
             "CREATE TABLE signal_measurements (freq_hz INTEGER PRIMARY KEY, signal_db INTEGER, "
-            "noise_dbfs INTEGER, measured_at REAL)"
+            "noise_dbfs INTEGER, audio_dbfs INTEGER, measured_at REAL)"
         )
         conn.executemany(
-            "INSERT INTO signal_measurements VALUES (?, ?, -50, 1.0)",
+            "INSERT INTO signal_measurements VALUES (?, ?, -50, -20, 1.0)",
             [(91_000_000, 7), (92_000_000, 21)],
         )
+        conn.execute("INSERT INTO signal_measurements VALUES (94000000, 30, -50, -120, 1.0)")
 
     original_db_path = app.DB_PATH
     original_signal_path = app.SIGNAL_DB_PATH
@@ -94,13 +100,17 @@ def test_station_signal_sort_is_numeric_global_and_unscanned_last(tmp_path) -> N
         app.SIGNAL_DB_PATH = original_signal_path
 
     assert [station["name"] for station in descending] == [
-        "Strong", "Weak", "Unscanned", "Ofcom"
+        "Strong", "Weak", "Silent spur", "Unscanned", "Ofcom"
     ]
     assert [station["name"] for station in ascending] == [
-        "Weak", "Strong", "Unscanned", "Ofcom"
+        "Weak", "Strong", "Silent spur", "Unscanned", "Ofcom"
     ]
     assert [(station["name"], station["country"]) for station in uk_stations] == [
-        ("Unscanned", "GB"), ("Weak", "GB"), ("Strong", "GB"), ("Ofcom", "GB")
+        ("Unscanned", "GB"),
+        ("Weak", "GB"),
+        ("Strong", "GB"),
+        ("Ofcom", "GB"),
+        ("Silent spur", "GB"),
     ]
     assert countries == [{"code": "GB", "name": "United Kingdom"}]
     assert scan_targets == [
@@ -108,6 +118,7 @@ def test_station_signal_sort_is_numeric_global_and_unscanned_last(tmp_path) -> N
         {"freq_hz": 91_000_000, "band": "FM"},
         {"freq_hz": 92_000_000, "band": "FM"},
         {"freq_hz": 93_000_000, "band": "FM"},
+        {"freq_hz": 94_000_000, "band": "FM"},
     ]
 
 
@@ -118,3 +129,48 @@ def test_scan_cancel_sets_shared_cancellation_event() -> None:
         assert app.scan_cancel.is_set()
     finally:
         app.scan_cancel.clear()
+
+
+def test_scan_targets_dedupe_conflicting_band_labels(tmp_path) -> None:
+    stations_path = tmp_path / "stations.db"
+    with sqlite3.connect(stations_path) as conn:
+        conn.execute(
+            "CREATE TABLE stations (freq_hz INTEGER, band TEXT, name TEXT, country TEXT, "
+            "mode TEXT, time_range TEXT, days_code TEXT, language TEXT, source TEXT)"
+        )
+        conn.executemany(
+            "INSERT INTO stations VALUES (963000, ?, ?, 'GB', 'AM', '', '', '', 'test')",
+            [("SW", "Schedule label"), ("AM", "Broadcast label")],
+        )
+
+    original_path = app.DB_PATH
+    try:
+        app.DB_PATH = stations_path
+        assert app.list_scan_targets() == [{"freq_hz": 963_000, "band": "AM"}]
+    finally:
+        app.DB_PATH = original_path
+
+
+def test_signal_store_migrates_existing_measurements_with_unknown_audio(tmp_path) -> None:
+    signal_path = tmp_path / "legacy-signal.db"
+    with sqlite3.connect(signal_path) as conn:
+        conn.execute(
+            "CREATE TABLE signal_measurements (freq_hz INTEGER PRIMARY KEY, "
+            "signal_db INTEGER NOT NULL, noise_dbfs INTEGER NOT NULL, measured_at REAL NOT NULL)"
+        )
+        conn.execute("INSERT INTO signal_measurements VALUES (963000, 13, -50, 1.0)")
+
+    original_path = app.SIGNAL_DB_PATH
+    original_cache = app.signal_cache.copy()
+    try:
+        app.SIGNAL_DB_PATH = signal_path
+        app.signal_cache.clear()
+        app._init_signal_store()
+        with sqlite3.connect(signal_path) as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(signal_measurements)")}
+        assert "audio_dbfs" in columns
+        assert app.signal_cache[963_000]["audio_dbfs"] is None
+    finally:
+        app.SIGNAL_DB_PATH = original_path
+        app.signal_cache.clear()
+        app.signal_cache.update(original_cache)

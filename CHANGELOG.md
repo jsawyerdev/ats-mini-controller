@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.4.0 - 2026-10-22
+
+### Fixed
+
+- Audible-station ranking now requires demodulated audio as well as RF energy, preventing silent
+  carriers and receiver spurs from being presented as the strongest listenable station.
+- Recovers the RTL-SDR after a failed direct-sampling/normal-tuner mode transition instead of
+  leaving the audio stream stalled.
+- Full-scan targets are now unique by frequency even when source records disagree on the band.
+
+### Added
+
+- Added live per-frequency scan progress.
+- Manual tuning during a scan now asks before stopping the scan; declining leaves it running.
+
 ## 2.3.0 - 2026-10-22
 
 ### Added

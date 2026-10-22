@@ -106,6 +106,11 @@ completed batches remain saved, updating both **Signal** and **Last checked**. A
 unfiltered sweep currently covers roughly 2,300 frequencies and therefore takes about 27 minutes
 at the default 0.7-second settling time.
 
+The progress counter updates for each frequency. Tuning a station while scanning asks before it
+stops the sweep. A scan and uninterrupted listening cannot run simultaneously on one dongle:
+scanning necessarily retunes the same RF front end. A second RTL-SDR would be required for true
+simultaneous scan-and-listen operation.
+
 ### CW Monitor
 
 The CW Monitor tab runs a background scan → lock → decode → release loop: it cycles a small set of known CW-heavy frequencies (propagation beacons with high duty cycles, ham calling frequencies), and the moment it detects real on/off keying it locks onto that frequency and decodes continuously, streaming the text live. When the signal goes quiet or fades below detection, that decode is pushed to the scrolling log with a timestamp, frequency, and WPM estimate, and scanning resumes.
