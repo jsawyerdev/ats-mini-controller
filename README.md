@@ -4,11 +4,11 @@ A web app that tunes a supported RTL-SDR USB dongle in software, with a searchab
 
 Author: **James Sawyer / JSLabs** — [jamessawyer.co.uk](https://www.jamessawyer.co.uk/) | [labs.jamessawyer.co.uk](https://labs.jamessawyer.co.uk/)
 
-![Station browser: 50,000+ stations, live meter, click to tune](docs/screenshots/stations.png)
+![Station browser sorted by strongest measured signal, with live receiver diagnostics and waterfall](docs/screenshots/stations.png)
 
-![Searching and filtering, with on-air stations highlighted](docs/screenshots/search-bbc.png)
+![BBC search results ranked by measured RF signal and audio content](docs/screenshots/search-bbc.png)
 
-![CW Monitor tab scanning a beacon frequency live](docs/screenshots/cw-monitor.png)
+![CW Monitor ready to scan or analyse the currently tuned frequency](docs/screenshots/cw-monitor.png)
 
 ## What it does
 
@@ -170,6 +170,14 @@ served over the unauthenticated web interface; retrieve them from the Pi filesys
 ## Changelog
 
 ### Unreleased
+
+### 2.8.4 - 2026-10-22
+
+#### Documentation
+
+- Replaced the original screenshots with captures of the live v2.8 interface showing receiver
+  diagnostics, the waterfall, strongest-first station results, measured audio content,
+  last-checked timestamps, search, and the CW Monitor.
 
 ### 2.8.3 - 2026-10-22
 
