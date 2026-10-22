@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.6.0 - 2026-10-22
+
+### Added
+
+- Added an inline scan-progress panel showing the current band and frequency, scan phase,
+  completed and total targets, percentage, elapsed time, estimated time remaining, and a progress
+  bar for visible and full scans.
+
 ## 2.5.1 - 2026-10-22
 
 ### Fixed

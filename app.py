@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "data" / "stations.db"
 SIGNAL_DB_PATH = Path(__file__).parent / "data" / "signal_cache.db"
-APP_VERSION = "2.5.1"
+APP_VERSION = "2.6.0"
 
 MIN_VIABLE_FM_SIGNAL_DB = 6
 MIN_VIABLE_DIRECT_SIGNAL_DB = 10
@@ -199,7 +199,16 @@ def _require_bridge() -> RtlSdrBridge:
 # manual click should always win outright, not just for one instant.
 scan_cancel = threading.Event()
 scan_progress_lock = threading.Lock()
-scan_progress = {"running": False, "processed": 0, "total": 0}
+scan_progress: dict[str, int | float | str | bool | None] = {
+    "running": False,
+    "processed": 0,
+    "total": 0,
+    "frequency_hz": None,
+    "band": None,
+    "phase": "idle",
+    "started_at": None,
+    "elapsed_s": 0.0,
+}
 
 cw_monitor: CwMonitor | None = None
 
@@ -347,9 +356,13 @@ def cancel_scan() -> dict[str, bool]:
 
 
 @app.get("/api/scan/status")
-def scan_status() -> dict[str, int | bool]:
+def scan_status() -> dict[str, int | float | str | bool | None]:
     with scan_progress_lock:
-        return dict(scan_progress)
+        status = dict(scan_progress)
+    started_at = status["started_at"]
+    if status["running"] and isinstance(started_at, float):
+        status["elapsed_s"] = max(0.0, time.time() - started_at)
+    return status
 
 
 @app.post("/api/scan")
@@ -365,7 +378,16 @@ def scan(req: ScanRequest) -> dict:
     requested = len(req.stations)
     targets = req.stations
     with scan_progress_lock:
-        scan_progress.update(running=True, processed=0, total=len(targets))
+        scan_progress.update(
+            running=True,
+            processed=0,
+            total=len(targets),
+            frequency_hz=None,
+            band=None,
+            phase="starting",
+            started_at=time.time(),
+            elapsed_s=0.0,
+        )
     started_at = time.monotonic()
     logger.info(
         "scan: starting %d targets (requested %d, settle_s=%.2f)",
@@ -385,7 +407,13 @@ def scan(req: ScanRequest) -> dict:
                 scan_progress["processed"] = processed_count
             continue
         seen.add(target.freq_hz)
+        with scan_progress_lock:
+            scan_progress.update(
+                frequency_hz=target.freq_hz, band=target.band, phase="tuning"
+            )
         radio.tune_to(target.freq_hz, target.band)
+        with scan_progress_lock:
+            scan_progress["phase"] = "sampling"
         time.sleep(req.settle_s)
         if scan_cancel.is_set():
             logger.info("scan: cancelled by a manual tune, stopping early")
@@ -422,7 +450,19 @@ def scan(req: ScanRequest) -> dict:
         with scan_progress_lock:
             scan_progress["processed"] = processed_count
     with scan_progress_lock:
-        scan_progress.update(running=False, processed=processed_count)
+        progress_started_at = scan_progress["started_at"]
+        scan_progress.update(
+            running=False,
+            processed=processed_count,
+            frequency_hz=None,
+            band=None,
+            phase="cancelled" if scan_cancel.is_set() else "complete",
+            elapsed_s=(
+                max(0.0, time.time() - progress_started_at)
+                if isinstance(progress_started_at, float)
+                else 0.0
+            ),
+        )
     logger.info(
         "scan: done - %d measured, %d duplicate, %d mismatch, %.1fs elapsed, cancelled=%s",
         len(results), skipped_duplicate, skipped_mismatch,

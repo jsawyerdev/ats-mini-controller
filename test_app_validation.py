@@ -133,6 +133,35 @@ def test_scan_cancel_sets_shared_cancellation_event() -> None:
         app.scan_cancel.clear()
 
 
+def test_scan_status_exposes_operator_progress() -> None:
+    with app.scan_progress_lock:
+        original = app.scan_progress.copy()
+        app.scan_progress.update(
+            running=True,
+            processed=7,
+            total=20,
+            frequency_hz=98_800_000,
+            band="FM",
+            phase="sampling",
+            started_at=1.0,
+        )
+    try:
+        status = app.scan_status()
+        assert status["running"] is True
+        assert status["processed"] == 7
+        assert status["total"] == 20
+        assert status["frequency_hz"] == 98_800_000
+        assert status["band"] == "FM"
+        assert status["phase"] == "sampling"
+        elapsed_s = status["elapsed_s"]
+        assert isinstance(elapsed_s, (int, float))
+        assert elapsed_s > 0
+    finally:
+        with app.scan_progress_lock:
+            app.scan_progress.clear()
+            app.scan_progress.update(original)
+
+
 def test_viability_uses_band_specific_rf_thresholds_and_rejects_silence() -> None:
     assert app._is_viable("FM", signal_db=6, audio_dbfs=-20)
     assert not app._is_viable("FM", signal_db=5, audio_dbfs=-20)

@@ -138,6 +138,17 @@
     padding: 14px 18px; background: linear-gradient(180deg, var(--navy-lt), var(--navy));
     border-bottom: 2px solid var(--orange-dim); display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
   }
+  #scan-progress {
+    padding: 10px 18px; background: var(--panel); border-bottom: 1px solid var(--navy-lt);
+    font-family: "SF Mono", "Courier New", monospace;
+  }
+  #scan-progress[hidden] { display: none; }
+  .scan-progress-head { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 7px; }
+  #scan-progress-current { color: var(--amber); font-size: 13px; }
+  #scan-progress-count { color: var(--text-dim); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .scan-progress-track { height: 6px; background: var(--navy-lt); border-radius: 3px; overflow: hidden; }
+  #scan-progress-bar { height: 100%; width: 0; background: var(--orange); transition: width 0.25s ease; }
+  #scan-progress-detail { margin-top: 6px; color: var(--text-dim); font-size: 11px; font-variant-numeric: tabular-nums; }
   #cw-status { font-size: 13px; color: var(--text-dim); }
   #cw-status.mode-locked { color: var(--green); }
   #cw-status.mode-scanning { color: var(--amber); }
@@ -200,6 +211,16 @@
     <span id="result-count" style="font-size:12px;color:var(--text-dim);"></span>
     <span id="seek-result" style="font-size:12px;color:var(--text-dim);"></span>
   </div>
+  <div id="scan-progress" role="status" aria-live="polite" hidden>
+    <div class="scan-progress-head">
+      <span id="scan-progress-current">Preparing scan…</span>
+      <span id="scan-progress-count">0 / 0</span>
+    </div>
+    <div class="scan-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <div id="scan-progress-bar"></div>
+    </div>
+    <div id="scan-progress-detail">0% · elapsed 0:00 · estimating time remaining</div>
+  </div>
   <table>
     <thead><tr><th></th><th class="sortable" data-sort="frequency" tabindex="0" aria-sort="ascending">Freq</th><th class="sortable" data-sort="band" tabindex="0" aria-sort="none">Band</th><th class="sortable" data-sort="name" tabindex="0" aria-sort="none">Name</th><th class="sortable" data-sort="country" tabindex="0" aria-sort="none">Country</th><th class="sortable" data-sort="language" tabindex="0" aria-sort="none">Language</th><th>On air (local)</th><th class="sortable" data-sort="signal" tabindex="0" aria-sort="none">Signal</th><th class="sortable" data-sort="last_checked" tabindex="0" aria-sort="none">Last checked</th></tr></thead>
     <tbody id="rows"></tbody>
@@ -236,6 +257,11 @@ const scanAllBtn = document.getElementById('scan-all-btn');
 const seekBtn = document.getElementById('seek-btn');
 const seekResultEl = document.getElementById('seek-result');
 const resultCountEl = document.getElementById('result-count');
+const scanProgressEl = document.getElementById('scan-progress');
+const scanProgressCurrentEl = document.getElementById('scan-progress-current');
+const scanProgressCountEl = document.getElementById('scan-progress-count');
+const scanProgressBarEl = document.getElementById('scan-progress-bar');
+const scanProgressDetailEl = document.getElementById('scan-progress-detail');
 const pagePrevEl = document.getElementById('page-prev');
 const pageNextEl = document.getElementById('page-next');
 const pageLabelEl = document.getElementById('page-label');
@@ -255,6 +281,46 @@ let pageOffset = 0;
 let pageTotal = 0;
 let sortBy = 'frequency';
 let sortOrder = 'asc';
+let scanStartedAt = null;
+let scanProgressHideTimer = null;
+
+function formatDuration(seconds) {
+  const rounded = Math.max(0, Math.round(seconds));
+  const minutes = Math.floor(rounded / 60);
+  return `${minutes}:${String(rounded % 60).padStart(2, '0')}`;
+}
+
+function showScanProgress(status, completedBeforeBatch, overallTotal) {
+  if (scanProgressHideTimer !== null) {
+    window.clearTimeout(scanProgressHideTimer);
+    scanProgressHideTimer = null;
+  }
+  const processed = Math.min(overallTotal, completedBeforeBatch + Number(status.processed || 0));
+  const percent = overallTotal > 0 ? Math.round(processed * 100 / overallTotal) : 0;
+  const elapsed = scanStartedAt === null ? 0 : (performance.now() - scanStartedAt) / 1000;
+  const eta = processed > 0 ? elapsed * (overallTotal - processed) / processed : null;
+  const phase = status.phase === 'sampling' ? 'Sampling' : status.phase === 'tuning' ? 'Tuning' : 'Preparing';
+  const target = status.frequency_hz
+    ? `${status.band || ''} ${fmtFreq(status.frequency_hz)}`.trim()
+    : 'next target';
+
+  scanProgressEl.hidden = false;
+  scanProgressCurrentEl.textContent = `${phase} · ${target}`;
+  scanProgressCountEl.textContent = `${processed.toLocaleString()} / ${overallTotal.toLocaleString()}`;
+  scanProgressBarEl.style.width = `${percent}%`;
+  const track = scanProgressBarEl.parentElement;
+  track.setAttribute('aria-valuenow', String(percent));
+  scanProgressDetailEl.textContent = `${percent}% · elapsed ${formatDuration(elapsed)} · `
+    + (eta === null ? 'estimating time remaining' : `about ${formatDuration(eta)} remaining`);
+}
+
+function finishScanProgress(message) {
+  scanProgressCurrentEl.textContent = message;
+  scanProgressHideTimer = window.setTimeout(() => {
+    scanProgressEl.hidden = true;
+    scanProgressHideTimer = null;
+  }, 4000);
+}
 
 function isAudible(s) {
   return s.viable === 1 || s.viable === true;
@@ -437,6 +503,8 @@ async function scanVisible() {
     .filter(s => activeOnlyEl.checked ? isActiveNow(s) : true)
     .slice(0, 200)
     .map(s => ({ freq_hz: s.freq_hz, band: s.band }));
+  scanStartedAt = performance.now();
+  showScanProgress({ processed: 0, phase: 'starting' }, 0, targets.length);
   scanBtn.textContent = `Scanning ${Math.min(targets.length, 200)} stations... (may take a few minutes)`;
   try {
     const request = fetch('/api/scan', {
@@ -447,13 +515,18 @@ async function scanVisible() {
     const progressTimer = window.setInterval(async () => {
       try {
         const status = await fetch('/api/scan/status').then(result => result.json());
+        showScanProgress(status, 0, targets.length);
         scanBtn.textContent = `Scanning ${status.processed}/${targets.length}`;
       } catch (_) {
         // The scan request remains authoritative; a missed progress poll is harmless.
       }
-    }, 500);
+    }, 1000);
     const response = await request.finally(() => window.clearInterval(progressTimer));
     if (!response.ok) throw new Error(`Scan failed (${response.status})`);
+    finishScanProgress('Visible scan complete');
+  } catch (error) {
+    console.error('visible scan failed', error);
+    finishScanProgress('Scan failed');
   } finally {
     scanInProgress = false;
     scanBtn.disabled = false;
@@ -491,6 +564,8 @@ async function scanAll() {
       seekResultEl.textContent = 'Nothing to scan (check filters).';
       return;
     }
+    scanStartedAt = performance.now();
+    showScanProgress({ processed: 0, phase: 'starting' }, 0, targets.length);
     for (let offset = 0; offset < targets.length && scanAllRunning; offset += 200) {
       const batch = targets.slice(offset, offset + 200);
       scanAllBtn.textContent = `Stop scan (${completed}/${targets.length})`;
@@ -502,11 +577,12 @@ async function scanAll() {
       const progressTimer = window.setInterval(async () => {
         try {
           const status = await fetch('/api/scan/status').then(result => result.json());
+          showScanProgress(status, completed, targets.length);
           scanAllBtn.textContent = `Stop scan (${completed + status.processed}/${targets.length})`;
         } catch (_) {
           // The scan request remains authoritative; a missed progress poll is harmless.
         }
-      }, 500);
+      }, 1000);
       const response = await request.finally(() => window.clearInterval(progressTimer));
       if (!response.ok) throw new Error(`Scan failed (${response.status})`);
       const result = await response.json();
@@ -517,9 +593,11 @@ async function scanAll() {
     seekResultEl.textContent = scanAllRunning
       ? `Scan complete: checked ${completed} unique frequencies.`
       : `Scan stopped after ${completed} unique frequencies.`;
+    finishScanProgress(scanAllRunning ? 'Full scan complete' : 'Scan stopped');
   } catch (error) {
     console.error('full scan failed', error);
     seekResultEl.textContent = `Scan failed after ${completed} frequencies.`;
+    finishScanProgress('Scan failed');
   } finally {
     scanAllRunning = false;
     scanInProgress = false;
