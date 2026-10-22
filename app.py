@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "data" / "stations.db"
 SIGNAL_DB_PATH = Path(__file__).parent / "data" / "signal_cache.db"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.0.1"
 
 
 @asynccontextmanager

@@ -19,8 +19,3 @@ services:
       - ./data:/app/data
     tmpfs:
       - /tmp:size=16m,mode=1777
-    environment:
-      # DEBUG adds per-target scan tracing, individual tune calls, and
-      # direct-sampling toggles - INFO (default) only logs scan
-      # start/end summaries, radio connect, and errors.
-      - LOG_LEVEL=DEBUG

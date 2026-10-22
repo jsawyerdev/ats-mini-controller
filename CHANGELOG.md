@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.1 - 2026-10-22
+
+### Fixed
+
+- Restored the documented INFO production log level instead of forcing high-volume SDR sample
+  diagnostics through Docker Compose.
+
 ## 2.0.0 - 2026-10-22
 
 ### Changed
