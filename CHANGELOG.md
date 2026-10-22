@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Documentation
+
+- Updated the public user guide to distinguish page-scoped and full-catalogue scans and document
+  viability thresholds, persistent results, detailed progress, interruption behaviour, and the
+  measured full-scan duration on Raspberry Pi.
+
 ## 2.6.1 - 2026-10-22
 
 ### Changed

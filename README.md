@@ -12,9 +12,9 @@ Author: **James Sawyer / JSLabs** — [jamessawyer.co.uk](https://www.jamessawye
 
 ## What it does
 
-- **Station browser**: 50,000+ shortwave, AM, and FM stations from EiBi (global shortwave schedules), the FCC (US/Canada AM+FM), and Ofcom (UK AM+FM). Search, filter by band, and see which shortwave broadcasts are on air right now based on your local time.
+- **Station browser**: 50,000+ shortwave, AM, and FM records from EiBi (global shortwave schedules), the FCC (US/Canada AM+FM), and Ofcom (UK AM+FM). Search by name, country, or language; filter by band or country; and see which shortwave broadcasts are on air now in your local time.
 - **Click to tune**: click any station in the browser and the SDR retunes instantly — a direct frequency set, not a multi-second band search.
-- **Signal scanning**: compares each tuned channel with the nearby RF noise floor and flags only stations that stand clearly above it. Results persist across restarts.
+- **Signal scanning**: checks all 2,312 unique catalogue frequencies, compares each channel with its nearby RF noise floor, and prioritises targets with non-silent audio. Results and last-checked times persist across restarts.
 - **CW (Morse code) monitor**: cycles known CW-heavy frequencies (propagation beacons, ham calling frequencies), locks onto whichever one has real keying, and decodes it live in the browser — timestamped, frequency-tagged, scrolling — until the signal stops or fades below detection.
 - **Live audio**: streams the demodulated audio to your browser over WebSocket and plays it via the Web Audio API — no physical audio cable needed, and it works from any machine on the network, not just whatever's plugged into the radio.
 
@@ -98,18 +98,21 @@ The meter bar at the top is always live: current frequency, band/mode, signal ab
 
 ### Signal scanning
 
-Click **Scan signals (visible)** to measure the filtered stations (capped at 200 per request). The scanner compares in-channel spectral power with nearby spectrum captured at the same instant, rejects the dongle's centre-frequency DC spike, and smooths twelve sample windows. A station is marked clear at 6 dB above noise; the **Audible only** checkbox hides weaker results. Measurements persist across restarts.
+Click **Scan signals (visible)** to measure up to 200 stations on the current page. The scanner compares in-channel spectral power with nearby spectrum captured at the same instant, rejects the dongle's centre-frequency DC spike, and smooths twelve sample windows. The **Viable only (scanned)** checkbox keeps results with non-silent audio at least 6 dB above noise on FM or 10 dB above noise on direct-sampled AM/SW. Measurements persist across restarts.
 
-**Scan all (filtered)** walks every unique frequency matching the current text, band, and country
-filters in batches of 200. The button shows progress and becomes a stop control while running;
-completed batches remain saved, updating both **Signal** and **Last checked**. A completely
-unfiltered sweep currently covers roughly 2,300 frequencies and therefore takes about 27 minutes
-at the default 0.7-second settling time.
+**Scan all stations** always walks all 2,312 unique catalogue frequencies in batches of 200.
+Search, band, country, page, on-air, and viable-only filters never narrow a full scan. Identical
+frequencies are measured once because multiple station records can describe the same RF target.
+Completed batches remain saved, updating both **Signal** and **Last checked**.
 
-The progress counter updates for each frequency. Tuning a station while scanning asks before it
-stops the sweep. A scan and uninterrupted listening cannot run simultaneously on one dongle:
-scanning necessarily retunes the same RF front end. A second RTL-SDR would be required for true
-simultaneous scan-and-listen operation.
+The inline progress panel shows the current phase, band and frequency, completed and total
+targets, percentage, elapsed time, estimated time remaining, and a progress bar. The scan button
+becomes a stop control while running. At the default 0.7-second settling time, a complete sweep
+takes about 27 minutes on the deployed Raspberry Pi.
+
+Tuning a station while scanning asks before it stops the sweep. A scan and uninterrupted listening
+cannot run simultaneously on one dongle: scanning necessarily retunes the same RF front end. A
+second RTL-SDR would be required for true simultaneous scan-and-listen operation.
 
 ### CW Monitor
 
