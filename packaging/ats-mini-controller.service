@@ -1,0 +1,18 @@
+[Unit]
+Description=RTL-SDR Station Browser (ats-mini-controller)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=atsradio
+Group=plugdev
+WorkingDirectory=/opt/ats-mini-controller
+EnvironmentFile=-/etc/ats-mini-controller/env
+ExecStart=/opt/ats-mini-controller/venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port 8731
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

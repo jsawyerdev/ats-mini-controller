@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# AppRun for the ats-mini-controller AppImage.
+# Starts the bundled venv's uvicorn server and opens the browser.
+set -euo pipefail
+HERE="$(dirname "$(readlink -f "$0")")"
+HOST="${HOST:-127.0.0.1}"
+PORT="${PORT:-8731}"
+
+"$HERE/opt/ats-mini-controller/venv/bin/python" -m uvicorn app:app \
+    --host "$HOST" --port "$PORT" --app-dir "$HERE/opt/ats-mini-controller" &
+SERVER_PID=$!
+trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+
+sleep 2
+if command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "http://$HOST:$PORT" 2>/dev/null || true
+fi
+echo "ats-mini-controller AppImage running at http://$HOST:$PORT (PID $SERVER_PID)"
+echo "Note: udev rules + DVB blacklist are NOT installed by the AppImage."
+echo "See README for the one-time host setup if the dongle is not detected."
+wait "$SERVER_PID"

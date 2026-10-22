@@ -1,0 +1,5 @@
+# RTL-SDR USB access for ats-mini-controller.
+# Gives members of `plugdev` read/write access to Realtek RTL2832U dongles
+# so the `atsradio` service user (and local operators) can open them via librtlsdr.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2838", MODE="0664", GROUP="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2832", MODE="0664", GROUP="plugdev"
