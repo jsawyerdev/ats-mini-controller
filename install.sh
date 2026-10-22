@@ -5,8 +5,8 @@
 #   curl -fsSL .../install.sh | bash -s -- --port 8731 --no-reboot
 #
 # What it does:
-#   1. Detects apt (.deb) vs dnf/zypper (.rpm) and installs the matching
-#      GitHub Release asset; falls back to pip+systemd on other distros.
+#   1. Detects apt (.deb) vs dnf/zypper (.rpm) vs pacman (AUR) and installs
+#      the matching asset; falls back to pip+systemd on other distros.
 #   2. Installs udev rules + DVB modprobe blacklist so librtlsdr can claim
 #      the dongle (needs one reboot afterwards on first install).
 #   3. Enables the ats-mini-controller systemd service on port 8731.
@@ -60,11 +60,26 @@ install_pkg() {
         curl -fsSL -o "$TMP/pkg.rpm" "$URL"
         if have dnf; then $SUDO dnf install -y "$TMP/pkg.rpm" rtl-sdr libusb1
         else $SUDO zypper install -y "$TMP/pkg.rpm" rtl-sdr libusb-1_0-0; fi
+    elif have pacman && [ "$MANUAL" -eq 0 ]; then
+        echo "Installing via AUR (ats-mini-controller-git) ..."
+        $SUDO pacman -Sy --needed --noconfirm base-devel rtl-sdr libusb python python-virtualenv git
+        if have yay; then
+            yay -S --noconfirm ats-mini-controller-git
+        elif have paru; then
+            paru -S --noconfirm ats-mini-controller-git
+        else
+            AUR_TMP="$(mktemp -d)"
+            git clone https://aur.archlinux.org/ats-mini-controller-git.git "$AUR_TMP"
+            (cd "$AUR_TMP" && makepkg -si --noconfirm)
+            rm -rf "$AUR_TMP"
+        fi
+        $SUDO systemctl enable --now ats-mini-controller.service 2>/dev/null || true
     else
         echo "No supported package manager asset; falling back to pip install."
         $SUDO apt-get update 2>/dev/null || true
         $SUDO apt-get install -y python3-venv rtl-sdr libusb-1.0-0 2>/dev/null || \
-        $SUDO dnf install -y python3 rtl-sdr libusb1 2>/dev/null || true
+        $SUDO dnf install -y python3 rtl-sdr libusb1 2>/dev/null || \
+        $SUDO pacman -Sy --needed --noconfirm python rtl-sdr libusb 2>/dev/null || true
         $SUDO mkdir -p /opt/ats-mini-controller /etc/ats-mini-controller
         $SUDO chown -R "$(id -u):$(id -g)" /opt/ats-mini-controller
         SRC="$(mktemp -d)"
