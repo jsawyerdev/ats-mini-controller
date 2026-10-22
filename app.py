@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 DB_PATH = Path(__file__).parent / "data" / "stations.db"
 SIGNAL_DB_PATH = Path(__file__).parent / "data" / "signal_cache.db"
 RECORDINGS_PATH = Path(__file__).parent / "data" / "recordings"
-APP_VERSION = "2.8.3"
+APP_VERSION = "2.12.0"
 
 MIN_VIABLE_FM_SIGNAL_DB = 6
 MIN_VIABLE_DIRECT_SIGNAL_DB = 10
@@ -764,36 +764,128 @@ class CwTarget(BaseModel):
     mode: Literal["USB", "LSB"] = "USB"
 
 
+class CwCatalogTarget(CwTarget):
+    name: str = Field(min_length=1, max_length=80)
+    group: Literal["Continuous beacons", "UK activity centres", "Scheduled practice"]
+    description: str = Field(min_length=1, max_length=160)
+    recommended: bool = False
+
+
 class CwScanRequest(BaseModel):
     targets: list[CwTarget] | None = Field(default=None, min_length=1, max_length=200)
     listen_seconds: float = Field(default=4.0, ge=0.1, le=60.0)
     stop_on_first_hit: bool = True
 
 
-# Known-active CW frequencies: propagation beacons and calling frequencies
-# with a high enough duty cycle to reliably test reception against. The
-# band_label field is informational only (RTL-SDR tunes directly, with no
-# band list to navigate).
-_DEFAULT_CW_TARGETS = [
-    # DK0WCY: transmits real CW during most of every 10-minute cycle (only
-    # RTTY/PSK31 at :10/:50), not a brief shared slot - far higher duty
-    # cycle than the beacon network below, so tried first.
-    CwTarget(freq_hz=10144000, band_label="30M", mode="USB"),
-    # NCDXF/IARU beacon network: 18 stations round-robin their callsign in
-    # CW every 10s (full cycle ~3 min), continuously, specifically so
-    # anyone can test reception - far higher odds of a real decode than
-    # waiting for unpredictable ham QSO traffic on the calling frequencies.
-    CwTarget(freq_hz=14100000, band_label="20M", mode="USB"),
-    CwTarget(freq_hz=18110000, band_label="17M", mode="USB"),
-    CwTarget(freq_hz=21150000, band_label="15M", mode="USB"),
-    CwTarget(freq_hz=24930000, band_label="12M", mode="USB"),
-    CwTarget(freq_hz=28200000, band_label="10M", mode="USB"),
-    # GB3RAL: a single station transmitting continuously (not round-robin),
-    # so a higher duty cycle than the NCDXF network on the same band.
-    CwTarget(freq_hz=28215000, band_label="10M", mode="USB"),
-    CwTarget(freq_hz=14030000, band_label="20M", mode="USB"),
-    CwTarget(freq_hz=28030000, band_label="10M", mode="USB"),
+def _cw_target(
+    freq_hz: int,
+    band: str,
+    name: str,
+    group: Literal["Continuous beacons", "UK activity centres", "Scheduled practice"],
+    description: str,
+    *,
+    recommended: bool = False,
+) -> CwCatalogTarget:
+    return CwCatalogTarget(
+        freq_hz=freq_hz,
+        band_label=band,
+        name=name,
+        group=group,
+        description=description,
+        recommended=recommended,
+    )
+
+
+# Receive targets, not a claim that a station is transmitting at this instant.
+# The coordinated beacon network is recommended because its predictable duty
+# cycle gives the decoder a materially better chance than activity centres.
+_CW_TARGET_CATALOG = [
+    _cw_target(
+        10_144_000,
+        "30M",
+        "DK0WCY",
+        "Continuous beacons",
+        "German propagation beacon",
+        recommended=True,
+    ),
+    *[
+        _cw_target(
+            freq,
+            band,
+            f"NCDXF/IARU {band}",
+            "Continuous beacons",
+            "International Beacon Project",
+            recommended=True,
+        )
+        for freq, band in [
+            (14_100_000, "20M"),
+            (18_110_000, "17M"),
+            (21_150_000, "15M"),
+            (24_930_000, "12M"),
+            (28_200_000, "10M"),
+        ]
+    ],
+    _cw_target(
+        28_215_000,
+        "10M",
+        "GB3MCB",
+        "Continuous beacons",
+        "UK CW/FT8 propagation beacon",
+        recommended=True,
+    ),
+    *[
+        _cw_target(freq, band, name, "UK activity centres", description)
+        for freq, band, name, description in [
+            (1_836_000, "160M", "160m CW QRP", "RSGB low-power activity centre"),
+            (3_555_000, "80M", "80m slow CW", "RSGB QRS activity centre"),
+            (3_560_000, "80M", "80m CW QRP", "RSGB low-power activity centre"),
+            (5_262_000, "60M", "60m CW QRP", "RSGB UK low-power activity centre"),
+            (7_030_000, "40M", "40m CW QRP", "RSGB low-power activity centre"),
+            (10_116_000, "30M", "30m CW QRP", "RSGB low-power activity centre"),
+            (14_055_000, "20M", "20m slow CW", "RSGB QRS activity centre"),
+            (14_060_000, "20M", "20m CW QRP", "RSGB low-power activity centre"),
+            (18_086_000, "17M", "17m CW QRP", "RSGB low-power activity centre"),
+            (21_055_000, "15M", "15m slow CW", "RSGB QRS activity centre"),
+            (21_060_000, "15M", "15m CW QRP", "RSGB low-power activity centre"),
+            (24_906_000, "12M", "12m CW QRP", "RSGB low-power activity centre"),
+            (28_055_000, "10M", "10m slow CW", "RSGB QRS activity centre"),
+            (28_060_000, "10M", "10m CW QRP", "RSGB low-power activity centre"),
+            (145_250_000, "2M", "UK slow Morse", "RSGB slow-Morse channel"),
+        ]
+    ],
+    *[
+        _cw_target(
+            freq,
+            band,
+            f"W1AW {band}",
+            "Scheduled practice",
+            "ARRL code practice and bulletins",
+        )
+        for freq, band in [
+            (1_802_500, "160M"),
+            (3_581_500, "80M"),
+            (7_047_500, "40M"),
+            (14_047_500, "20M"),
+            (18_077_500, "17M"),
+            (21_067_500, "15M"),
+            (28_067_500, "10M"),
+            (50_350_000, "6M"),
+            (147_555_000, "2M"),
+        ]
+    ],
 ]
+
+_DEFAULT_CW_TARGETS = [
+    CwTarget(freq_hz=target.freq_hz, band_label=target.band_label, mode=target.mode)
+    for target in _CW_TARGET_CATALOG
+    if target.recommended
+]
+
+
+@app.get("/api/cw/targets")
+def cw_targets() -> list[CwCatalogTarget]:
+    """Return curated receive targets for the selectable CW monitor."""
+    return _CW_TARGET_CATALOG
 
 
 @app.post("/api/cw/scan")

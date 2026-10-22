@@ -100,6 +100,32 @@ def test_default_cw_targets_cover_all_international_beacon_bands() -> None:
     assert {14_100_000, 18_110_000, 21_150_000, 24_930_000, 28_200_000} <= frequencies
 
 
+def test_cw_target_catalog_is_unique_and_defaults_are_recommended() -> None:
+    catalog = app.cw_targets()
+    frequencies = [target.freq_hz for target in catalog]
+    defaults = {target.freq_hz for target in app._DEFAULT_CW_TARGETS}
+
+    assert len(catalog) == 31
+    assert len(frequencies) == len(set(frequencies))
+    assert defaults == {target.freq_hz for target in catalog if target.recommended}
+    assert {target.group for target in catalog} == {
+        "Continuous beacons",
+        "UK activity centres",
+        "Scheduled practice",
+    }
+    assert {
+        1_802_500,
+        3_581_500,
+        7_047_500,
+        14_047_500,
+        18_077_500,
+        21_067_500,
+        28_067_500,
+        50_350_000,
+        147_555_000,
+    } <= set(frequencies)
+
+
 def test_health_reports_radio_readiness() -> None:
     response = Response()
     original_bridge = app.bridge

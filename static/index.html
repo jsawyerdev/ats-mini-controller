@@ -157,6 +157,16 @@
   #cw-status.mode-scanning { color: var(--amber); }
   #cw-help { padding: 10px 18px; color: var(--text-dim); background: var(--panel); border-bottom: 1px solid var(--navy-lt); font-size: 12px; }
   #cw-empty { padding: 18px; color: var(--text-dim); font-size: 12px; }
+  #cw-target-picker { background: var(--panel); border-bottom: 1px solid var(--navy-lt); padding: 10px 18px; }
+  #cw-target-picker summary { color: var(--amber); cursor: pointer; font-size: 13px; }
+  #cw-target-actions { display: flex; gap: 8px; margin: 10px 0; }
+  #cw-target-actions button { padding: 5px 9px; font-size: 11px; }
+  #cw-target-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 8px 16px; max-height: 300px; overflow-y: auto; }
+  .cw-target-group { grid-column: 1 / -1; color: var(--orange); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 6px; }
+  .cw-target { display: grid; grid-template-columns: auto 85px 1fr; gap: 7px; align-items: start; font-size: 12px; cursor: pointer; }
+  .cw-target input { margin-top: 2px; }
+  .cw-target-freq { color: var(--amber); font-family: "SF Mono", "Courier New", monospace; }
+  .cw-target-detail { color: var(--text-dim); }
 
   #cw-inprogress {
     margin: 16px 18px; padding: 16px 20px; background: var(--panel); border: 1px solid var(--orange-dim);
@@ -259,7 +269,16 @@
     <button id="cw-listen-btn">One-shot: listen here</button>
     <button id="cw-self-test-btn">Test decoder</button>
   </div>
-  <div id="cw-help"><strong>CW means Continuous Wave:</strong> Morse code keys a steady carrier on and off. This scan checks dedicated CW beacon and calling frequencies; the station-catalogue scan checks broadcast channels.</div>
+  <div id="cw-help"><strong>CW means Continuous Wave:</strong> Morse code keys a steady carrier on and off. Frequencies below are listening targets, not guarantees of a current transmission. Recommended targets favour predictable beacons.</div>
+  <details id="cw-target-picker">
+    <summary>Scan frequencies: <span id="cw-target-count">loading…</span></summary>
+    <div id="cw-target-actions">
+      <button type="button" id="cw-target-recommended">Recommended</button>
+      <button type="button" id="cw-target-all">Select all</button>
+      <button type="button" id="cw-target-none">Clear</button>
+    </div>
+    <div id="cw-target-list"></div>
+  </details>
   <div id="cw-inprogress" hidden>
     <span class="cw-freq"></span>
     <span class="cw-text"></span>
@@ -298,6 +317,9 @@ const cwStatusEl = document.getElementById('cw-status');
 const cwInProgressEl = document.getElementById('cw-inprogress');
 const cwLogEl = document.getElementById('cw-log');
 const cwEmptyEl = document.getElementById('cw-empty');
+const cwTargetCountEl = document.getElementById('cw-target-count');
+const cwTargetListEl = document.getElementById('cw-target-list');
+let cwTargets = [];
 const audioToggleBtn = document.getElementById('audio-toggle');
 const gainSelectEl = document.getElementById('gain-select');
 const calibrateBtn = document.getElementById('calibrate-btn');
@@ -751,6 +773,66 @@ cwListenBtn.addEventListener('click', cwListen);
 let cwMonitorRunning = false;
 let cwLogSeen = 0;
 
+function selectedCwTargets() {
+  const selected = new Set([...cwTargetListEl.querySelectorAll('input:checked')].map(input => Number(input.value)));
+  return cwTargets.filter(target => selected.has(target.freq_hz)).map(({ freq_hz, band_label, mode }) => ({ freq_hz, band_label, mode }));
+}
+
+function updateCwTargetCount() {
+  const selected = selectedCwTargets().length;
+  cwTargetCountEl.textContent = `${selected} of ${cwTargets.length} selected`;
+}
+
+function setCwTargetSelection(predicate) {
+  for (const input of cwTargetListEl.querySelectorAll('input')) {
+    const target = cwTargets.find(item => item.freq_hz === Number(input.value));
+    input.checked = Boolean(target && predicate(target));
+  }
+  updateCwTargetCount();
+}
+
+async function loadCwTargets() {
+  try {
+    const response = await fetch('/api/cw/targets');
+    if (!response.ok) throw new Error('target catalogue unavailable');
+    cwTargets = await response.json();
+    let previousGroup = '';
+    for (const target of cwTargets) {
+      if (target.group !== previousGroup) {
+        const heading = document.createElement('div');
+        heading.className = 'cw-target-group';
+        heading.textContent = target.group;
+        cwTargetListEl.appendChild(heading);
+        previousGroup = target.group;
+      }
+      const label = document.createElement('label');
+      label.className = 'cw-target';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.value = target.freq_hz;
+      input.checked = target.recommended;
+      input.addEventListener('change', updateCwTargetCount);
+      const frequency = document.createElement('span');
+      frequency.className = 'cw-target-freq';
+      frequency.textContent = fmtFreq(target.freq_hz);
+      const detail = document.createElement('span');
+      detail.className = 'cw-target-detail';
+      detail.textContent = `${target.name} — ${target.description}`;
+      label.append(input, frequency, detail);
+      cwTargetListEl.appendChild(label);
+    }
+    updateCwTargetCount();
+  } catch (error) {
+    cwTargetCountEl.textContent = 'unavailable';
+    cwStatusEl.textContent = 'Could not load CW frequencies';
+  }
+}
+
+document.getElementById('cw-target-recommended').addEventListener('click', () => setCwTargetSelection(target => target.recommended));
+document.getElementById('cw-target-all').addEventListener('click', () => setCwTargetSelection(() => true));
+document.getElementById('cw-target-none').addEventListener('click', () => setCwTargetSelection(() => false));
+loadCwTargets();
+
 function fmtClock(epochSeconds) {
   return new Date(epochSeconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
@@ -835,9 +917,17 @@ refreshCwMonitorState();
 cwMonitorToggleBtn.addEventListener('click', async () => {
   cwMonitorToggleBtn.disabled = true;
   try {
-    await fetch(cwMonitorRunning ? '/api/cw/monitor/stop' : '/api/cw/monitor/start', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    const targets = cwMonitorRunning ? null : selectedCwTargets();
+    if (!cwMonitorRunning && !targets.length) {
+      cwStatusEl.textContent = 'Select at least one CW frequency';
+      return;
+    }
+    const response = await fetch(cwMonitorRunning ? '/api/cw/monitor/stop' : '/api/cw/monitor/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(targets ? { targets } : {}),
     });
+    if (!response.ok) throw new Error('CW monitor request failed');
+  } catch (error) {
+    cwStatusEl.textContent = error.message;
   } finally {
     cwMonitorToggleBtn.disabled = false;
   }

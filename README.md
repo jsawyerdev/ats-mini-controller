@@ -126,7 +126,21 @@ second RTL-SDR would be required for true simultaneous scan-and-listen operation
 
 ### CW Monitor
 
-The CW Monitor tab runs a background scan → lock → decode → release loop: it cycles nine known CW-heavy frequencies, including all five NCDXF/IARU beacon bands plus high-duty-cycle and amateur calling frequencies. The UI shows the current frequency, target position, completed cycle, and decode count. When it detects real on/off keying it locks and streams the text, raw Morse, tone frequency, speed, and confidence live. When the signal goes quiet or fades below detection, that decode is pushed to the scrolling log with the same quality evidence plus its timestamp and frequency, and scanning resumes.
+The CW Monitor tab runs a background scan → lock → decode → release loop. Its selectable catalogue
+contains 31 receive targets grouped into predictable beacons, UK activity centres, and scheduled
+W1AW practice transmissions. Seven higher-duty-cycle beacons are selected by default; **Select
+all** includes every catalogue entry, while **Recommended** quickly restores the practical default.
+The UI shows the current frequency, target position, completed cycle, and decode count. When it
+detects real on/off keying it locks and streams the text, raw Morse, tone frequency, speed, and
+confidence live. When the signal goes quiet or fades below detection, that decode is pushed to
+the scrolling log with the same quality evidence plus its timestamp and frequency, and scanning
+resumes.
+
+The catalogue is based on the [RSGB 2026 UK band plan](https://rsgb.services/public/bandplans/),
+the [NCDXF/IARU International Beacon Project](https://www.ncdxf.org/beacon/), and the
+[ARRL W1AW operating schedule](https://www.arrl.org/w1aw-operating-schedule). Activity centres
+are places where CW may occur, not scheduled stations, and no finite list can represent every
+frequency an amateur might use.
 
 The broadcast **Scan all stations** action and **Scan CW frequencies** are deliberately separate.
 The catalogue contains scheduled broadcast channels, not every frequency where amateur Morse may
@@ -190,6 +204,20 @@ served over the unauthenticated web interface; retrieve them from the Pi filesys
 ## Changelog
 
 ### Unreleased
+
+### 2.12.0 - 2026-10-22
+
+#### Added
+
+- Added a selectable 31-frequency CW receive catalogue covering coordinated propagation beacons,
+  RSGB UK CW/QRS/QRP activity centres, and scheduled ARRL W1AW code-practice frequencies.
+- Added Recommended, Select all, and Clear controls so users can trade scan-cycle speed against
+  breadth before starting live decoding.
+
+#### Changed
+
+- Replaced the fixed CW target list with the user's selected catalogue entries while retaining a
+  practical seven-beacon default.
 
 ### 2.11.0 - 2026-10-22
 
