@@ -54,6 +54,45 @@ sudo reboot
 
 Then browse to `http://<host>:8731`.
 
+### Native packages (.deb / .rpm / AppImage / 1-liner)
+
+Prebuilt releases install the same app without Docker: files under
+`/opt/ats-mini-controller` (bundled `venv`), a `ats-mini-controller.service`
+systemd unit, udev rules for the dongle, and a DVB blacklist — see
+`packaging/` for the unit, rules, `postinst`/`prerm`, RPM spec, and builders.
+
+One-liner (detects apt vs dnf/zypper, falls back to pip+systemd):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jsawyerdev/ats-mini-controller/main/install.sh | bash
+```
+
+Manual install:
+
+```bash
+# Debian/Ubuntu/RPi OS (amd64/arm64/armhf)
+sudo dpkg -i dist/ats-mini-controller_2.12.0_amd64.deb
+sudo apt-get install -f -y   # pulls rtl-sdr + libusb if missing
+
+# Fedora/RHEL/openSUSE
+sudo dnf install ./dist/ats-mini-controller-2.12.0-1.x86_64.rpm
+
+# Portable (no system integration; still needs the udev/blacklist step once)
+chmod +x ats-mini-controller-2.12.0-x86_64.AppImage
+./ats-mini-controller-2.12.0-x86_64.AppImage
+```
+
+Build them from source (`gem install fpm` for .deb/.rpm):
+
+```bash
+packaging/build-packages.sh        # -> dist/*.deb, dist/*.rpm
+packaging/build-appimage.sh       # -> dist/*.AppImage (needs appimagetool)
+```
+
+First install usually needs one reboot to release the DVB kernel modules.
+The API has no authentication — keep port 8731 on a trusted LAN or behind
+an authenticated reverse proxy.
+
 The container runs as a non-root user with all Linux capabilities dropped, a
 read-only root filesystem, and only `./data` writable. The API controls physical
 radio state and has no application-level authentication, so expose port 8731 only

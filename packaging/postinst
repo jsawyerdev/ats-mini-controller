@@ -1,0 +1,37 @@
+#!/bin/sh
+# postinst for ats-mini-controller .deb/.rpm (also referenced by install.sh).
+set -e
+
+SERVICE_USER="atsradio"
+SERVICE_GROUP="plugdev"
+APP_DIR="/opt/ats-mini-controller"
+
+# Create a dedicated system user if missing.
+if ! id "$SERVICE_USER" >/dev/null 2>&1; then
+    useradd --system --no-create-home --home-dir "$APP_DIR" \
+        --shell /usr/sbin/nologin --groups "$SERVICE_GROUP" "$SERVICE_USER" || true
+else
+    usermod -a -G "$SERVICE_GROUP" "$SERVICE_USER" || true
+fi
+
+# Mutable state stays writable for the service user.
+mkdir -p "$APP_DIR/data/recordings" /etc/ats-mini-controller
+chown -R "$SERVICE_USER:$SERVICE_GROUP" "$APP_DIR/data" || true
+chmod 2750 "$APP_DIR/data" || true
+
+# Reload udev so the RTL-SDR rules apply to newly plugged devices.
+udevadm control --reload-rules 2>/dev/null || true
+udevadm trigger --subsystem-match=usb --action=change 2>/dev/null || true
+
+# Reload systemd and enable the service (start it when systemd is running).
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || true
+    systemctl enable ats-mini-controller.service >/dev/null || true
+    # Best effort: detached DVB modules are only released on reboot, so a
+    # fresh install usually needs one reboot before the dongle is usable.
+    systemctl restart ats-mini-controller.service || true
+fi
+
+echo "ats-mini-controller installed. Open http://<host>:8731 on your LAN."
+echo "If the dongle is not detected, reboot once to release the DVB kernel modules."
+exit 0

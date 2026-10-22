@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=RTL-SDR Station Browser
+Comment=Tune an RTL-SDR dongle, browse stations and decode CW
+Exec=AppRun
+Icon=ats-mini-controller
+Type=Application
+Categories=HamRadio;Network;
+Terminal=false

@@ -1,0 +1,10 @@
+#!/bin/sh
+# prerm for ats-mini-controller .deb/.rpm.
+set -e
+
+if [ -d /run/systemd/system ]; then
+    systemctl stop ats-mini-controller.service 2>/dev/null || true
+    systemctl disable ats-mini-controller.service 2>/dev/null || true
+fi
+
+exit 0
