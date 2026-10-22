@@ -78,6 +78,10 @@ _MORSE_TO_CHAR = {
 # the dominant carrier rather than assuming a fixed pitch, since it depends
 # on the receiver's BFO offset from the actual signal frequency.
 _TONE_SEARCH_HZ = (300, 1200)
+_SELF_TEST_TEXT = "SOS SOS"
+_SELF_TEST_TONE_HZ = 600.0
+_SELF_TEST_DOT_S = 0.08
+_SELF_TEST_SAMPLE_RATE = 8_000
 
 
 @dataclass(frozen=True)
@@ -92,6 +96,44 @@ class CwResult:
 
 def record_audio(bridge: RtlSdrBridge, seconds: float) -> np.ndarray:
     return bridge.capture_audio(seconds)
+
+
+def _synthetic_self_test_audio() -> np.ndarray:
+    """Build a clean, deterministic CW sample without touching the receiver."""
+    char_to_morse = {char: morse for morse, char in _MORSE_TO_CHAR.items()}
+
+    def silence(seconds: float) -> np.ndarray:
+        return np.zeros(round(seconds * _SELF_TEST_SAMPLE_RATE), dtype=np.float32)
+
+    def tone(seconds: float) -> np.ndarray:
+        samples = round(seconds * _SELF_TEST_SAMPLE_RATE)
+        time_axis = np.arange(samples, dtype=np.float64) / _SELF_TEST_SAMPLE_RATE
+        audio = np.sin(2 * np.pi * _SELF_TEST_TONE_HZ * time_axis)
+        fade_samples = min(samples // 2, round(0.005 * _SELF_TEST_SAMPLE_RATE))
+        if fade_samples:
+            fade = np.linspace(0.0, 1.0, fade_samples)
+            audio[:fade_samples] *= fade
+            audio[-fade_samples:] *= fade[::-1]
+        return audio.astype(np.float32)
+
+    chunks = [silence(0.2)]
+    for word_index, word in enumerate(_SELF_TEST_TEXT.split()):
+        if word_index:
+            chunks.append(silence(7 * _SELF_TEST_DOT_S))
+        for char_index, char in enumerate(word):
+            if char_index:
+                chunks.append(silence(3 * _SELF_TEST_DOT_S))
+            for element_index, element in enumerate(char_to_morse[char]):
+                if element_index:
+                    chunks.append(silence(_SELF_TEST_DOT_S))
+                chunks.append(tone(_SELF_TEST_DOT_S * (1 if element == "." else 3)))
+    chunks.append(silence(0.2))
+    return np.concatenate(chunks)
+
+
+def self_test() -> tuple[str, CwResult]:
+    """Exercise the production decoder with a known synthetic SOS message."""
+    return _SELF_TEST_TEXT, analyze(_synthetic_self_test_audio(), _SELF_TEST_SAMPLE_RATE)
 
 
 def _find_tone_hz(audio: np.ndarray, samplerate: int) -> tuple[float, float] | None:

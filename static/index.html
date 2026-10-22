@@ -170,6 +170,7 @@
     padding: 10px 14px; margin-top: 8px; background: var(--navy); border-left: 3px solid var(--green);
     border-radius: 0 4px 4px 0; font-family: "SF Mono", "Courier New", monospace; animation: slide-in 0.3s ease-out;
   }
+  .cw-entry.synthetic { border-left-color: var(--orange); }
   .cw-entry .cw-meta { font-size: 11px; color: var(--text-dim); letter-spacing: 0.05em; margin-bottom: 4px; }
   .cw-entry .cw-body { color: var(--amber); font-size: 15px; }
   @keyframes slide-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
@@ -253,6 +254,7 @@
     <button id="cw-monitor-toggle">Start CW Monitor</button>
     <span id="cw-status">Idle</span>
     <button id="cw-listen-btn">One-shot: listen here</button>
+    <button id="cw-self-test-btn">Test decoder</button>
   </div>
   <div id="cw-inprogress" hidden>
     <span class="cw-freq"></span>
@@ -284,6 +286,7 @@ const pageLabelEl = document.getElementById('page-label');
 const volUpEl = document.getElementById('vol-up');
 const volDownEl = document.getElementById('vol-down');
 const cwListenBtn = document.getElementById('cw-listen-btn');
+const cwSelfTestBtn = document.getElementById('cw-self-test-btn');
 const cwMonitorToggleBtn = document.getElementById('cw-monitor-toggle');
 const cwStatusEl = document.getElementById('cw-status');
 const cwInProgressEl = document.getElementById('cw-inprogress');
@@ -747,13 +750,34 @@ function fmtClock(epochSeconds) {
 
 function addCwLogEntry(e) {
   const div = document.createElement('div');
-  div.className = 'cw-entry';
-  const freqLabel = e.freq_hz ? fmtFreq(e.freq_hz) : 'manual';
+  div.className = e.synthetic ? 'cw-entry synthetic' : 'cw-entry';
+  const freqLabel = e.synthetic ? 'synthetic self-test · not received over air' : e.freq_hz ? fmtFreq(e.freq_hz) : 'manual';
   const wpmLabel = e.wpm ? `${e.wpm.toFixed(0)} WPM` : '';
+  const confidenceLabel = e.confidence === undefined ? '' : ` · ${Math.round(e.confidence * 100)}% confidence`;
   div.innerHTML = `<div class="cw-meta">${fmtClock(e.started_at)} &middot; ${freqLabel} ${wpmLabel ? '&middot; ' + wpmLabel : ''}</div>` +
-    `<div class="cw-body">${e.text || '(no readable text)'} <span style="color:var(--text-dim);font-size:11px;">${e.morse || ''}</span></div>`;
+    `<div class="cw-body">${e.text || '(no readable text)'} <span style="color:var(--text-dim);font-size:11px;">${e.morse || ''}${confidenceLabel}</span></div>`;
   cwLogEl.prepend(div);
 }
+
+cwSelfTestBtn.addEventListener('click', async () => {
+  cwSelfTestBtn.disabled = true;
+  const before = cwSelfTestBtn.textContent;
+  cwSelfTestBtn.textContent = 'Testing…';
+  try {
+    const response = await fetch('/api/cw/self-test', { method: 'POST' });
+    const result = await response.json();
+    if (!response.ok || !result.passed) throw new Error('decoder self-test failed');
+    addCwLogEntry({ ...result, started_at: Date.now() / 1000 });
+    cwStatusEl.className = 'mode-locked';
+    cwStatusEl.textContent = 'Decoder self-test passed';
+  } catch (error) {
+    cwStatusEl.className = '';
+    cwStatusEl.textContent = 'Decoder self-test failed';
+  } finally {
+    cwSelfTestBtn.disabled = false;
+    cwSelfTestBtn.textContent = before;
+  }
+});
 
 async function refreshCwMonitorState() {
   const es = new EventSource('/api/cw/monitor/stream');

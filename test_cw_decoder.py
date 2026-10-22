@@ -82,5 +82,16 @@ def test_analyze_rejects_continuous_tone() -> None:
     assert result.text == ""
 
 
+def test_self_test_exercises_production_decoder() -> None:
+    expected, result = cw_decoder.self_test()
+
+    assert expected == "SOS SOS"
+    assert result.is_cw
+    assert result.text == expected
+    assert result.morse == "... --- ... / ... --- ..."
+    assert result.tone_hz is not None
+    assert abs(result.tone_hz - 600) < 5
+
+
 def test_morse_to_text_marks_unknown_patterns() -> None:
     assert cw_decoder.morse_to_text("... --- ... / ......") == "SOS ?"

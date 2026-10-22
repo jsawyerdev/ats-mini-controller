@@ -128,6 +128,10 @@ second RTL-SDR would be required for true simultaneous scan-and-listen operation
 
 The CW Monitor tab runs a background scan → lock → decode → release loop: it cycles a small set of known CW-heavy frequencies (propagation beacons with high duty cycles, ham calling frequencies), and the moment it detects real on/off keying it locks onto that frequency and decodes continuously, streaming the text live. When the signal goes quiet or fades below detection, that decode is pushed to the scrolling log with a timestamp, frequency, and WPM estimate, and scanning resumes.
 
+**Test decoder** runs a deterministic synthetic `SOS SOS` signal through the same production
+decoder and shows the text, Morse, speed, and confidence in the log. The result is labelled
+synthetic and does not claim that Morse was received over the antenna.
+
 **One-shot: listen here** does a single ~4 second capture-and-decode on whatever frequency the radio is currently tuned to, without touching the tuning — useful to check a specific frequency you've navigated to manually from the Stations tab.
 
 A manual tune from the Stations tab always interrupts a running scan or CW hunt — background automation never fights you for control of the radio.
@@ -170,6 +174,15 @@ served over the unauthenticated web interface; retrieve them from the Pi filesys
 ## Changelog
 
 ### Unreleased
+
+### 2.9.0 - 2026-10-22
+
+#### Added
+
+- Added a receiver-independent CW decoder self-test that generates `SOS SOS`, runs it through
+  the production DSP path, and displays text, raw Morse, speed, and confidence in the CW Monitor.
+- Labelled self-test output explicitly as synthetic so it cannot be mistaken for an over-air
+  reception.
 
 ### 2.8.5 - 2026-10-22
 

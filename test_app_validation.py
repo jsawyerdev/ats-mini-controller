@@ -45,6 +45,15 @@ def test_cw_requests_reject_empty_or_unbounded_work() -> None:
     _assert_invalid(app.MonitorStartRequest, targets=[])
 
 
+def test_cw_self_test_is_explicitly_synthetic_and_passes() -> None:
+    result = app.cw_self_test()
+
+    assert result["synthetic"] is True
+    assert result["passed"] is True
+    assert result["expected"] == "SOS SOS"
+    assert result["text"] == "SOS SOS"
+
+
 def test_health_reports_radio_readiness() -> None:
     response = Response()
     original_bridge = app.bridge

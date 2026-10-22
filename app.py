@@ -746,6 +746,18 @@ def cw_listen(req: CwListenRequest) -> dict:
     return {"device": "rtl-sdr", **result.__dict__}
 
 
+@app.post("/api/cw/self-test")
+def cw_self_test() -> dict:
+    """Prove the decoder path with synthetic input without claiming RF reception."""
+    expected, result = cw_decoder.self_test()
+    return {
+        "synthetic": True,
+        "expected": expected,
+        "passed": result.is_cw and result.text == expected,
+        **result.__dict__,
+    }
+
+
 class CwTarget(BaseModel):
     freq_hz: int = Field(ge=MIN_FREQUENCY_HZ, le=MAX_FREQUENCY_HZ)
     band_label: str = Field(min_length=1, max_length=32)
