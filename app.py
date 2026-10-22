@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "data" / "stations.db"
 SIGNAL_DB_PATH = Path(__file__).parent / "data" / "signal_cache.db"
-APP_VERSION = "2.6.0"
+APP_VERSION = "2.6.1"
 
 MIN_VIABLE_FM_SIGNAL_DB = 6
 MIN_VIABLE_DIRECT_SIGNAL_DB = 10
@@ -301,14 +301,12 @@ def list_countries() -> list[dict[str, str]]:
 
 
 @app.get("/api/scan/targets")
-def list_scan_targets(q: str = "", band: str = "", country: str = "") -> list[dict]:
-    """Return each filtered frequency once so a full scan does no duplicate RF work."""
-    where, params = _station_where(q, band, country)
+def list_scan_targets() -> list[dict]:
+    """Return every catalogue frequency once so a full scan does no duplicate RF work."""
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute(
-            f"SELECT s.freq_hz, MIN(s.band) FROM stations s {where} "
-            "GROUP BY s.freq_hz ORDER BY s.freq_hz",
-            params,
+            "SELECT s.freq_hz, MIN(s.band) FROM stations s "
+            "GROUP BY s.freq_hz ORDER BY s.freq_hz"
         ).fetchall()
     return [{"freq_hz": freq_hz, "band": row_band} for freq_hz, row_band in rows]
 

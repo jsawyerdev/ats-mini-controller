@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.6.1 - 2026-10-22
+
+### Changed
+
+- **Scan all stations** now always scans every unique frequency in the catalogue; search, band,
+  country, page, on-air, and viable-only filters affect browsing but never narrow a full scan.
+
 ## 2.6.0 - 2026-10-22
 
 ### Added

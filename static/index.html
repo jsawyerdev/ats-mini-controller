@@ -206,7 +206,7 @@
     <label class="toggle"><input id="active-only" type="checkbox"> On air now</label>
     <label class="toggle"><input id="audible-only" type="checkbox"> Viable only (scanned)</label>
     <button id="scan-btn">Scan signals (visible)</button>
-    <button id="scan-all-btn">Scan all (filtered)</button>
+    <button id="scan-all-btn">Scan all stations</button>
     <button id="seek-btn">Find next strongest</button>
     <span id="result-count" style="font-size:12px;color:var(--text-dim);"></span>
     <span id="seek-result" style="font-size:12px;color:var(--text-dim);"></span>
@@ -552,16 +552,13 @@ async function scanAll() {
   scanInProgress = true;
   scanBtn.disabled = true;
   seekBtn.disabled = true;
-  const params = new URLSearchParams({
-    q: qEl.value, band: bandEl.value, country: countryEl.value,
-  });
   let completed = 0;
   try {
-    const targetResponse = await fetch(`/api/scan/targets?${params}`);
+    const targetResponse = await fetch('/api/scan/targets');
     if (!targetResponse.ok) throw new Error(`Could not load scan targets (${targetResponse.status})`);
     const targets = await targetResponse.json();
     if (targets.length === 0) {
-      seekResultEl.textContent = 'Nothing to scan (check filters).';
+      seekResultEl.textContent = 'The station catalogue is empty.';
       return;
     }
     scanStartedAt = performance.now();
@@ -602,7 +599,7 @@ async function scanAll() {
     scanAllRunning = false;
     scanInProgress = false;
     scanAllBtn.disabled = false;
-    scanAllBtn.textContent = 'Scan all (filtered)';
+    scanAllBtn.textContent = 'Scan all stations';
     scanBtn.disabled = false;
     seekBtn.disabled = false;
     refresh();

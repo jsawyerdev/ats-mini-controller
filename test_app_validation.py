@@ -96,7 +96,7 @@ def test_station_signal_sort_is_numeric_global_and_unscanned_last(tmp_path) -> N
         ascending = app.list_stations("", "", "", 10, 0, "signal", "asc")["stations"]
         uk_stations = app.list_stations("", "", "GB", 10, 0, "frequency", "asc")["stations"]
         countries = app.list_countries()
-        scan_targets = app.list_scan_targets("", "FM", "GB")
+        scan_targets = app.list_scan_targets()
     finally:
         app.DB_PATH = original_db_path
         app.SIGNAL_DB_PATH = original_signal_path
@@ -182,11 +182,18 @@ def test_scan_targets_dedupe_conflicting_band_labels(tmp_path) -> None:
             "INSERT INTO stations VALUES (963000, ?, ?, 'GB', 'AM', '', '', '', 'test')",
             [("SW", "Schedule label"), ("AM", "Broadcast label")],
         )
+        conn.execute(
+            "INSERT INTO stations VALUES "
+            "(100000000, 'FM', 'FM target', 'US', 'FM', '', '', '', 'test')"
+        )
 
     original_path = app.DB_PATH
     try:
         app.DB_PATH = stations_path
-        assert app.list_scan_targets() == [{"freq_hz": 963_000, "band": "AM"}]
+        assert app.list_scan_targets() == [
+            {"freq_hz": 963_000, "band": "AM"},
+            {"freq_hz": 100_000_000, "band": "FM"},
+        ]
     finally:
         app.DB_PATH = original_path
 
