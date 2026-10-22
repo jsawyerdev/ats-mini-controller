@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 DB_PATH = Path(__file__).parent / "data" / "stations.db"
 SIGNAL_DB_PATH = Path(__file__).parent / "data" / "signal_cache.db"
 RECORDINGS_PATH = Path(__file__).parent / "data" / "recordings"
-APP_VERSION = "2.8.2"
+APP_VERSION = "2.8.3"
 
 MIN_VIABLE_FM_SIGNAL_DB = 6
 MIN_VIABLE_DIRECT_SIGNAL_DB = 10

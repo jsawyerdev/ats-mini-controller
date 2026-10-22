@@ -171,6 +171,13 @@ served over the unauthenticated web interface; retrieve them from the Pi filesys
 
 ### Unreleased
 
+### 2.8.3 - 2026-10-22
+
+#### Fixed
+
+- Excluded operator IQ recordings from Docker build contexts and image layers; captures remain
+  only in the mounted persistent data directory.
+
 ### 2.8.2 - 2026-10-22
 
 #### Fixed
