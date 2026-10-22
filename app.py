@@ -44,13 +44,30 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "data" / "stations.db"
 SIGNAL_DB_PATH = Path(__file__).parent / "data" / "signal_cache.db"
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.3.0"
 
 COUNTRY_NAMES = {"CA": "Canada", "GB": "United Kingdom", "US": "United States"}
 
 
 def _country_sql(alias: str = "s") -> str:
     return f"CASE WHEN {alias}.source LIKE 'ofcom_%' THEN 'GB' ELSE {alias}.country END"
+
+
+def _station_where(q: str, band: str, country: str) -> tuple[str, list[object]]:
+    clauses: list[str] = []
+    params: list[object] = []
+    if q:
+        clauses.append("(s.name LIKE ? OR s.country LIKE ? OR s.language LIKE ?)")
+        like = f"%{q}%"
+        params.extend([like, like, like])
+    if band:
+        clauses.append("s.band = ?")
+        params.append(band)
+    if country:
+        clauses.append(f"{_country_sql()} = ?")
+        params.append(country)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    return where, params
 
 
 @asynccontextmanager
@@ -184,19 +201,7 @@ def list_stations(
     try:
         conn.row_factory = sqlite3.Row
         conn.execute("ATTACH DATABASE ? AS signal_store", (str(SIGNAL_DB_PATH),))
-        clauses: list[str] = []
-        params: list[object] = []
-        if q:
-            clauses.append("(s.name LIKE ? OR s.country LIKE ? OR s.language LIKE ?)")
-            like = f"%{q}%"
-            params.extend([like, like, like])
-        if band:
-            clauses.append("s.band = ?")
-            params.append(band)
-        if country:
-            clauses.append(f"{_country_sql()} = ?")
-            params.append(country)
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        where, params = _station_where(q, band, country)
         total = conn.execute(
             f"SELECT COUNT(*) FROM stations s {where}", params
         ).fetchone()[0]
@@ -246,6 +251,19 @@ def list_countries() -> list[dict[str, str]]:
     return [{"code": code, "name": COUNTRY_NAMES.get(code, code)} for code in codes]
 
 
+@app.get("/api/scan/targets")
+def list_scan_targets(q: str = "", band: str = "", country: str = "") -> list[dict]:
+    """Return each filtered frequency once so a full scan does no duplicate RF work."""
+    where, params = _station_where(q, band, country)
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            f"SELECT s.freq_hz, s.band FROM stations s {where} "
+            "GROUP BY s.freq_hz, s.band ORDER BY s.freq_hz, s.band",
+            params,
+        ).fetchall()
+    return [{"freq_hz": freq_hz, "band": row_band} for freq_hz, row_band in rows]
+
+
 class TuneRequest(BaseModel):
     frequency_hz: int = Field(ge=MIN_FREQUENCY_HZ, le=MAX_FREQUENCY_HZ)
     band: Literal["SW", "AM", "FM"]
@@ -280,6 +298,12 @@ class ScanTarget(BaseModel):
 class ScanRequest(BaseModel):
     stations: list[ScanTarget] = Field(min_length=1, max_length=200)
     settle_s: float = Field(default=0.7, ge=0.05, le=10.0)
+
+
+@app.post("/api/scan/cancel")
+def cancel_scan() -> dict[str, bool]:
+    scan_cancel.set()
+    return {"ok": True}
 
 
 @app.post("/api/scan")

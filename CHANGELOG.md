@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.3.0 - 2026-10-22
+
+### Added
+
+- Added a stoppable **Scan all (filtered)** workflow that checks every unique frequency matching
+  the current text, band, and country filters in bounded batches, updating signal strength and
+  last-checked timestamps as it progresses.
+
 ## 2.2.0 - 2026-10-22
 
 ### Added

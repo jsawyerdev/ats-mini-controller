@@ -88,6 +88,7 @@ def test_station_signal_sort_is_numeric_global_and_unscanned_last(tmp_path) -> N
         ascending = app.list_stations("", "", "", 10, 0, "signal", "asc")["stations"]
         uk_stations = app.list_stations("", "", "GB", 10, 0, "frequency", "asc")["stations"]
         countries = app.list_countries()
+        scan_targets = app.list_scan_targets("", "FM", "GB")
     finally:
         app.DB_PATH = original_db_path
         app.SIGNAL_DB_PATH = original_signal_path
@@ -102,3 +103,18 @@ def test_station_signal_sort_is_numeric_global_and_unscanned_last(tmp_path) -> N
         ("Unscanned", "GB"), ("Weak", "GB"), ("Strong", "GB"), ("Ofcom", "GB")
     ]
     assert countries == [{"code": "GB", "name": "United Kingdom"}]
+    assert scan_targets == [
+        {"freq_hz": 90_000_000, "band": "FM"},
+        {"freq_hz": 91_000_000, "band": "FM"},
+        {"freq_hz": 92_000_000, "band": "FM"},
+        {"freq_hz": 93_000_000, "band": "FM"},
+    ]
+
+
+def test_scan_cancel_sets_shared_cancellation_event() -> None:
+    app.scan_cancel.clear()
+    try:
+        assert app.cancel_scan() == {"ok": True}
+        assert app.scan_cancel.is_set()
+    finally:
+        app.scan_cancel.clear()

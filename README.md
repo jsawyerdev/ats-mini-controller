@@ -100,6 +100,12 @@ The meter bar at the top is always live: current frequency, band/mode, signal ab
 
 Click **Scan signals (visible)** to measure the filtered stations (capped at 200 per request). The scanner compares in-channel spectral power with nearby spectrum captured at the same instant, rejects the dongle's centre-frequency DC spike, and smooths twelve sample windows. A station is marked clear at 6 dB above noise; the **Audible only** checkbox hides weaker results. Measurements persist across restarts.
 
+**Scan all (filtered)** walks every unique frequency matching the current text, band, and country
+filters in batches of 200. The button shows progress and becomes a stop control while running;
+completed batches remain saved, updating both **Signal** and **Last checked**. A completely
+unfiltered sweep currently covers roughly 2,300 frequencies and therefore takes about 27 minutes
+at the default 0.7-second settling time.
+
 ### CW Monitor
 
 The CW Monitor tab runs a background scan → lock → decode → release loop: it cycles a small set of known CW-heavy frequencies (propagation beacons with high duty cycles, ham calling frequencies), and the moment it detects real on/off keying it locks onto that frequency and decodes continuously, streaming the text live. When the signal goes quiet or fades below detection, that decode is pushed to the scrolling log with a timestamp, frequency, and WPM estimate, and scanning resumes.
