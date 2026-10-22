@@ -65,6 +65,10 @@ def test_station_signal_sort_is_numeric_global_and_unscanned_last(tmp_path) -> N
             "INSERT INTO stations VALUES (?, 'FM', ?, 'GB', 'FM', '', '', 'English', 'test')",
             [(90_000_000, "Unscanned"), (91_000_000, "Weak"), (92_000_000, "Strong")],
         )
+        conn.execute(
+            "INSERT INTO stations VALUES "
+            "(93000000, 'FM', 'Ofcom', 'London', 'FM', '', '', '', 'ofcom_fm')"
+        )
     with sqlite3.connect(signal_path) as conn:
         conn.execute(
             "CREATE TABLE signal_measurements (freq_hz INTEGER PRIMARY KEY, signal_db INTEGER, "
@@ -80,11 +84,21 @@ def test_station_signal_sort_is_numeric_global_and_unscanned_last(tmp_path) -> N
     try:
         app.DB_PATH = stations_path
         app.SIGNAL_DB_PATH = signal_path
-        descending = app.list_stations("", "", 10, 0, "signal", "desc")["stations"]
-        ascending = app.list_stations("", "", 10, 0, "signal", "asc")["stations"]
+        descending = app.list_stations("", "", "", 10, 0, "signal", "desc")["stations"]
+        ascending = app.list_stations("", "", "", 10, 0, "signal", "asc")["stations"]
+        uk_stations = app.list_stations("", "", "GB", 10, 0, "frequency", "asc")["stations"]
+        countries = app.list_countries()
     finally:
         app.DB_PATH = original_db_path
         app.SIGNAL_DB_PATH = original_signal_path
 
-    assert [station["name"] for station in descending] == ["Strong", "Weak", "Unscanned"]
-    assert [station["name"] for station in ascending] == ["Weak", "Strong", "Unscanned"]
+    assert [station["name"] for station in descending] == [
+        "Strong", "Weak", "Unscanned", "Ofcom"
+    ]
+    assert [station["name"] for station in ascending] == [
+        "Weak", "Strong", "Unscanned", "Ofcom"
+    ]
+    assert [(station["name"], station["country"]) for station in uk_stations] == [
+        ("Unscanned", "GB"), ("Weak", "GB"), ("Strong", "GB"), ("Ofcom", "GB")
+    ]
+    assert countries == [{"code": "GB", "name": "United Kingdom"}]

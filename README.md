@@ -87,7 +87,10 @@ The radio bridge tunes `tone_hz` off the actual carrier, so a keyed CW signal be
 
 ### Browsing and tuning
 
-The Stations tab shows the full database, 500 rows per page, ordered by frequency. Type in the search box to filter by name, country, or language; use the band dropdown to narrow to shortwave, AM, or FM. Click any row and the SDR retunes instantly.
+The Stations tab shows the full database, 500 rows per page. Click a column heading to sort the complete filtered result set; **Signal** starts strongest-first and **Last checked** shows when that frequency was measured. Type in the search box to filter by name, country, or language, or use the country and band dropdowns for exact filtering. Country flags are rendered locally as Unicode, with a neutral globe for EiBi's non-ISO codes. Click any row and the SDR retunes instantly.
+
+The bundled list's measured coverage and known omissions are recorded in
+[DATABASE_AUDIT.md](DATABASE_AUDIT.md).
 
 The **On air now** checkbox filters shortwave listings to schedules that are currently active, converted from the database's UTC times into your browser's local time zone automatically. AM and FM entries are broadcast-license data with no schedule, so they're always treated as on air.
 

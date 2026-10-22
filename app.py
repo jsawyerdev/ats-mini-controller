@@ -44,7 +44,13 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "data" / "stations.db"
 SIGNAL_DB_PATH = Path(__file__).parent / "data" / "signal_cache.db"
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
+
+COUNTRY_NAMES = {"CA": "Canada", "GB": "United Kingdom", "US": "United States"}
+
+
+def _country_sql(alias: str = "s") -> str:
+    return f"CASE WHEN {alias}.source LIKE 'ofcom_%' THEN 'GB' ELSE {alias}.country END"
 
 
 @asynccontextmanager
@@ -166,9 +172,12 @@ def health(response: Response) -> dict[str, bool]:
 def list_stations(
     q: str = "",
     band: str = "",
+    country: str = "",
     limit: int = Query(default=500, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
-    sort: Literal["frequency", "band", "name", "country", "language", "signal"] = "frequency",
+    sort: Literal[
+        "frequency", "band", "name", "country", "language", "signal", "last_checked"
+    ] = "frequency",
     order: Literal["asc", "desc"] = "asc",
 ) -> dict:
     conn = sqlite3.connect(DB_PATH)
@@ -184,6 +193,9 @@ def list_stations(
         if band:
             clauses.append("s.band = ?")
             params.append(band)
+        if country:
+            clauses.append(f"{_country_sql()} = ?")
+            params.append(country)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         total = conn.execute(
             f"SELECT COUNT(*) FROM stations s {where}", params
@@ -193,17 +205,20 @@ def list_stations(
             "frequency": "s.freq_hz",
             "band": "s.band COLLATE NOCASE",
             "name": "s.name COLLATE NOCASE",
-            "country": "s.country COLLATE NOCASE",
+            "country": f"{_country_sql()} COLLATE NOCASE",
             "language": "s.language COLLATE NOCASE",
             "signal": "m.signal_db",
+            "last_checked": "m.measured_at",
         }
         sort_column = sort_columns[sort]
-        missing_signal_last = "m.signal_db IS NULL ASC, " if sort == "signal" else ""
+        missing_last = (
+            f"{sort_column} IS NULL ASC, " if sort in {"signal", "last_checked"} else ""
+        )
         rows = conn.execute(
             "SELECT s.*, m.signal_db, m.noise_dbfs, m.measured_at "
             "FROM stations s LEFT JOIN signal_store.signal_measurements m "
             "ON m.freq_hz = s.freq_hz "
-            f"{where} ORDER BY {missing_signal_last}{sort_column} {direction}, "
+            f"{where} ORDER BY {missing_last}{sort_column} {direction}, "
             "s.freq_hz ASC, s.name COLLATE NOCASE ASC LIMIT ? OFFSET ?",
             (*params, limit, offset),
         ).fetchall()
@@ -212,8 +227,23 @@ def list_stations(
     out = []
     for r in rows:
         d = dict(r)
+        if d["source"].startswith("ofcom_"):
+            d["country"] = "GB"
         out.append(d)
     return {"total": total, "offset": offset, "returned": len(out), "stations": out}
+
+
+@app.get("/api/countries")
+def list_countries() -> list[dict[str, str]]:
+    with sqlite3.connect(DB_PATH) as conn:
+        codes = [
+            row[0]
+            for row in conn.execute(
+                f"SELECT DISTINCT {_country_sql()} AS code FROM stations s "
+                "WHERE code <> '' ORDER BY code COLLATE NOCASE"
+            )
+        ]
+    return [{"code": code, "name": COUNTRY_NAMES.get(code, code)} for code in codes]
 
 
 class TuneRequest(BaseModel):

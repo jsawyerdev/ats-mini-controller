@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.2.0 - 2026-10-22
+
+### Added
+
+- Added sortable last-checked timestamps backed by the existing persisted measurement time.
+- Added an explicit country filter and local Unicode country flags without a runtime CDN.
+- Added a documented audit of the bundled station database's coverage and known gaps.
+
+### Fixed
+
+- Normalized Ofcom records to the United Kingdom instead of presenting their service area as a
+  country.
+
 ## 2.1.0 - 2026-10-22
 
 ### Added
