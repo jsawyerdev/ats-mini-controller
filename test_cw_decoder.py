@@ -5,6 +5,8 @@ Author: James Sawyer / JSLabs - https://www.jamessawyer.co.uk/ | https://labs.ja
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 
 import cw_decoder
@@ -57,6 +59,9 @@ def test_analyze_decodes_synthetic_cw() -> None:
 
     result = cw_decoder.analyze(audio, samplerate)
 
+    assert type(result.is_cw) is bool
+    assert type(result.confidence) is float
+    json.dumps(result.__dict__)
     assert result.is_cw
     assert result.text == "SOS SOS"
     assert result.tone_hz is not None
@@ -71,6 +76,8 @@ def test_analyze_rejects_continuous_tone() -> None:
 
     result = cw_decoder.analyze(audio, samplerate)
 
+    assert type(result.is_cw) is bool
+    assert type(result.confidence) is float
     assert not result.is_cw
     assert result.text == ""
 

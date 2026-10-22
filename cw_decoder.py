@@ -222,13 +222,13 @@ def analyze(audio: np.ndarray, samplerate: int) -> CwResult:
     wpm_is_plausible = wpm is not None and 5.0 <= wpm <= 45.0
     if not wpm_is_plausible:
         confidence = min(confidence, 0.49)
-    is_cw = (
+    is_cw = bool(
         confidence > 0.5
         and symbol_quality >= 0.5
         and len(decoded_chars) >= 2
         and wpm_is_plausible
     )
-    return CwResult(is_cw, tone_hz, morse, text, wpm, confidence)
+    return CwResult(is_cw, tone_hz, morse, text, wpm, float(confidence))
 
 
 def listen(bridge: RtlSdrBridge, seconds: float = 4.0, samplerate: int = 48000) -> CwResult:

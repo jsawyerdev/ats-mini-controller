@@ -171,6 +171,13 @@ served over the unauthenticated web interface; retrieve them from the Pi filesys
 
 ### Unreleased
 
+### 2.8.5 - 2026-10-22
+
+#### Fixed
+
+- Return native Python booleans and confidence values from the CW decoder so diagnostic scans
+  serialize correctly instead of failing with HTTP 500 after capturing audio.
+
 ### 2.8.4 - 2026-10-22
 
 #### Documentation
