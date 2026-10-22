@@ -25,7 +25,8 @@ from pydantic import BaseModel, Field
 
 import cw_decoder
 from audio_passthrough import serve_audio_websocket
-from cw_monitor import CwMonitor, CwTarget as MonitorCwTarget
+from cw_monitor import CwMonitor
+from cw_monitor import CwTarget as MonitorCwTarget
 from radio_bridge import RtlSdrBridge, find_rtlsdr_device
 
 
@@ -44,9 +45,16 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "data" / "stations.db"
 SIGNAL_DB_PATH = Path(__file__).parent / "data" / "signal_cache.db"
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.5.0"
+
+MIN_VIABLE_SIGNAL_DB = 6
+MIN_VIABLE_QUALITY_DB = 6
 
 COUNTRY_NAMES = {"CA": "Canada", "GB": "United Kingdom", "US": "United States"}
+
+
+def _is_viable(signal_db: int, quality_db: int) -> bool:
+    return signal_db >= MIN_VIABLE_SIGNAL_DB and quality_db >= MIN_VIABLE_QUALITY_DB
 
 
 def _country_sql(alias: str = "s") -> str:
@@ -103,20 +111,25 @@ def _init_signal_store() -> None:
             signal_db INTEGER NOT NULL,
             noise_dbfs INTEGER NOT NULL,
             audio_dbfs INTEGER,
+            quality_db INTEGER,
             measured_at REAL NOT NULL
         )
         """)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(signal_measurements)")}
     if "audio_dbfs" not in columns:
         conn.execute("ALTER TABLE signal_measurements ADD COLUMN audio_dbfs INTEGER")
+    if "quality_db" not in columns:
+        conn.execute("ALTER TABLE signal_measurements ADD COLUMN quality_db INTEGER")
     conn.commit()
-    for freq_hz, signal_db, noise_dbfs, audio_dbfs, measured_at in conn.execute(
-        "SELECT freq_hz, signal_db, noise_dbfs, audio_dbfs, measured_at FROM signal_measurements"
+    for freq_hz, signal_db, noise_dbfs, audio_dbfs, quality_db, measured_at in conn.execute(
+        "SELECT freq_hz, signal_db, noise_dbfs, audio_dbfs, quality_db, measured_at "
+        "FROM signal_measurements"
     ):
         signal_cache[freq_hz] = {
             "signal_db": signal_db,
             "noise_dbfs": noise_dbfs,
             "audio_dbfs": audio_dbfs,
+            "quality_db": quality_db,
             "measured_at": measured_at,
         }
     conn.close()
@@ -132,13 +145,14 @@ def _persist_signal(freq_hz: int, entry: dict) -> None:
         with conn:
             conn.execute(
                 "INSERT OR REPLACE INTO signal_measurements "
-                "(freq_hz, signal_db, noise_dbfs, audio_dbfs, measured_at) "
-                "VALUES (?, ?, ?, ?, ?)",
+                "(freq_hz, signal_db, noise_dbfs, audio_dbfs, quality_db, measured_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     freq_hz,
                     entry["signal_db"],
                     entry["noise_dbfs"],
                     entry["audio_dbfs"],
+                    entry["quality_db"],
                     entry["measured_at"],
                 ),
             )
@@ -231,7 +245,8 @@ def list_stations(
         sort_column = sort_columns[sort]
         if sort == "signal":
             missing_last = (
-                "(m.audio_dbfs IS NULL OR m.audio_dbfs < -50) ASC, "
+                f"(m.signal_db >= {MIN_VIABLE_SIGNAL_DB} AND "
+                f"m.quality_db >= {MIN_VIABLE_QUALITY_DB}) DESC, "
                 "m.signal_db IS NULL ASC, "
             )
         elif sort == "last_checked":
@@ -239,7 +254,9 @@ def list_stations(
         else:
             missing_last = ""
         rows = conn.execute(
-            "SELECT s.*, m.signal_db, m.noise_dbfs, m.audio_dbfs, m.measured_at "
+            "SELECT s.*, m.signal_db, m.noise_dbfs, m.audio_dbfs, m.quality_db, "
+            f"(m.signal_db >= {MIN_VIABLE_SIGNAL_DB} AND "
+            f"m.quality_db >= {MIN_VIABLE_QUALITY_DB}) AS viable, m.measured_at "
             "FROM stations s LEFT JOIN signal_store.signal_measurements m "
             "ON m.freq_hz = s.freq_hz "
             f"{where} ORDER BY {missing_last}{sort_column} {direction}, "
@@ -384,17 +401,20 @@ def scan(req: ScanRequest) -> dict:
             "signal_db": st.signal_db,
             "noise_dbfs": st.noise_dbfs,
             "audio_dbfs": st.audio_dbfs,
+            "quality_db": st.quality_db,
+            "viable": _is_viable(st.signal_db, st.quality_db),
             "measured_at": time.time(),
         }
         signal_cache[target.freq_hz] = entry
         _persist_signal(target.freq_hz, entry)
         results.append({"freq_hz": target.freq_hz, **entry})
         logger.debug(
-            "scan: %d Hz signal=%d dB noise=%d dBFS audio=%d dBFS",
+            "scan: %d Hz signal=%d dB noise=%d dBFS audio=%d dBFS quality=%d dB",
             target.freq_hz,
             st.signal_db,
             st.noise_dbfs,
             st.audio_dbfs,
+            st.quality_db,
         )
         processed_count += 1
         with scan_progress_lock:

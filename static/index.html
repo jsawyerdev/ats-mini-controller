@@ -193,7 +193,7 @@
     </select>
     <select id="country"><option value="">All countries</option></select>
     <label class="toggle"><input id="active-only" type="checkbox"> On air now</label>
-    <label class="toggle"><input id="audible-only" type="checkbox"> Audible only (scanned)</label>
+    <label class="toggle"><input id="audible-only" type="checkbox"> Viable only (scanned)</label>
     <button id="scan-btn">Scan signals (visible)</button>
     <button id="scan-all-btn">Scan all (filtered)</button>
     <button id="seek-btn">Find next strongest</button>
@@ -256,11 +256,8 @@ let pageTotal = 0;
 let sortBy = 'frequency';
 let sortOrder = 'asc';
 
-// Six dB means roughly four times the nearby noise power. This avoids
-// classifying broadband noise as a station merely because gain is high.
 function isAudible(s) {
-  return s.signal_db !== null && s.signal_db !== undefined && s.signal_db >= 6
-    && s.audio_dbfs !== null && s.audio_dbfs !== undefined && s.audio_dbfs >= -50;
+  return s.viable === 1 || s.viable === true;
 }
 
 const DAY_ABBR = ['Su','Mo','Tu','We','Th','Fr','Sa']; // JS getUTCDay(): 0=Sun
@@ -338,7 +335,7 @@ function rssiCell(s) {
   const pct = Math.max(4, Math.min(100, s.signal_db * (100 / 30)));
   const weak = !isAudible(s);
   return `<span class="rssi-bar${weak ? ' rssi-weak' : ''}"><span style="width:${pct}%"></span></span>` +
-    `<span class="rssi-val">+${s.signal_db} dB RF / ${s.audio_dbfs ?? '-'} dBFS audio</span>`;
+    `<span class="rssi-val">+${s.signal_db} dB RF / ${s.quality_db ?? '-'} dB quality</span>`;
 }
 
 async function refresh() {
@@ -600,7 +597,7 @@ async function findNextStrongest() {
     await tune(best.freq_hz, station ? station.band : bandEl.value);
     seekResultEl.textContent =
       `Found: ${fmtFreq(best.freq_hz)}${station ? ' - ' + station.name : ''} `
-      + `(signal +${best.signal_db} dB, audio ${best.audio_dbfs} dBFS) `
+      + `(signal +${best.signal_db} dB, quality ${best.quality_db} dB) `
       + `[${batch.offset}-${batch.offset + targets.length} of ${batch.total}]`;
     seekOffset = batch.offset + 200 >= batch.total ? 0 : batch.offset + 200;
     refresh();
@@ -814,7 +811,7 @@ es.onmessage = (e) => {
   document.getElementById('m-mode').textContent = `${st.band} / ${st.mode}`;
   document.getElementById('m-rssi').textContent = '+' + st.signal_db + ' dB';
   document.getElementById('m-snr').textContent = st.noise_dbfs + ' dBFS';
-  document.getElementById('m-audio').textContent = st.audio_dbfs + ' dBFS';
+  document.getElementById('m-audio').textContent = `${st.audio_dbfs} dBFS / ${st.quality_db} dB quality`;
   document.getElementById('m-vol').textContent = st.volume;
   linkDot.className = 'dot on';
   linkTxt.textContent = 'Live';

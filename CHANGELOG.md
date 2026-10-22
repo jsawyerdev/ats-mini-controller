@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.5.0 - 2026-10-22
+
+### Fixed
+
+- Viable-target detection now measures structure in demodulated audio rather than its normalized
+  playback volume, which previously promoted amplified hiss as something worth listening to.
+- Strongest-signal sorting and filtering require both a signal above the local RF floor and
+  non-noise-like audio. Existing measurements remain unclassified until rescanned.
+
 ## 2.4.0 - 2026-10-22
 
 ### Fixed

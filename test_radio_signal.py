@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 import numpy as np
-import radio_bridge
 
-from radio_bridge import FM_CHANNEL_BW_HZ, IQ_SAMPLE_RATE, _audio_level_dbfs, _estimate_signal
+import radio_bridge
+from radio_bridge import (
+    AUDIO_RATE,
+    FM_AUDIO_BW_HZ,
+    FM_CHANNEL_BW_HZ,
+    IQ_SAMPLE_RATE,
+    _audio_level_dbfs,
+    _audio_quality_db,
+    _estimate_signal,
+)
 
 
 def _noise(rng: np.random.Generator, samples: int, amplitude: float = 0.01) -> np.ndarray:
@@ -18,6 +26,22 @@ def test_audio_level_distinguishes_silence_from_demodulated_audio() -> None:
     assert _audio_level_dbfs(np.zeros(1024, dtype=np.float32)) == -120
     tone = np.sin(np.linspace(0, 20 * np.pi, 1024, endpoint=False)).astype(np.float32) * 0.1
     assert -24 <= _audio_level_dbfs(tone) <= -22
+
+
+def test_audio_quality_rejects_noise_but_accepts_structured_audio() -> None:
+    rng = np.random.default_rng(20261022)
+    samples = 4096
+    time_s = np.arange(samples) / AUDIO_RATE
+    noise = rng.standard_normal(samples).astype(np.float32)
+    programme = (
+        np.sin(2 * np.pi * 220 * time_s)
+        + 0.5 * np.sin(2 * np.pi * 880 * time_s)
+        + 0.25 * np.sin(2 * np.pi * 1760 * time_s)
+    ).astype(np.float32)
+
+    assert _audio_quality_db(np.zeros(samples, dtype=np.float32), FM_AUDIO_BW_HZ) == 0
+    assert _audio_quality_db(noise, FM_AUDIO_BW_HZ) < 6
+    assert _audio_quality_db(programme, FM_AUDIO_BW_HZ) >= 6
 
 
 def test_failed_direct_sampling_switch_reopens_device(monkeypatch) -> None:

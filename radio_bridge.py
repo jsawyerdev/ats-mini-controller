@@ -69,7 +69,7 @@ def find_rtlsdr_device() -> bool:
     """True if an RTL-SDR dongle is currently plugged in and openable."""
     try:
         sdr = RtlSdr()
-    except Exception:
+    except Exception:  # noqa: BLE001 -- USB backends raise several unrelated exception types
         return False
     sdr.close()
     return True
@@ -83,6 +83,7 @@ class RadioStatus:
     signal_db: int  # in-channel power above the nearby RF noise floor
     noise_dbfs: int  # nearby RF noise floor, relative dBFS (diagnostic only)
     audio_dbfs: int  # demodulated audio RMS; -120 means digital silence
+    quality_db: int  # spectral structure above noise-like audio; higher is more listenable
     volume: int  # software playback gain, 0-100
     seq: int
 
@@ -174,8 +175,8 @@ def _estimate_signal(iq: np.ndarray, channel_bw_hz: float) -> tuple[int, int]:
     signal_peak = float(np.percentile(power[signal_mask], 99.9))
     noise_peak = float(np.percentile(power[noise_mask], 99.9))
     carrier_excess_db = 10 * np.log10(signal_peak / max(noise_peak, 1e-12))
-    signal_db = int(round(np.clip(max(channel_excess_db, carrier_excess_db), 0, 60)))
-    noise_dbfs = int(round(10 * np.log10(max(noise_power, 1e-12))))
+    signal_db = round(np.clip(max(channel_excess_db, carrier_excess_db), 0, 60))
+    noise_dbfs = round(10 * np.log10(max(noise_power, 1e-12)))
     return signal_db, noise_dbfs
 
 
@@ -184,7 +185,31 @@ def _audio_level_dbfs(audio: np.ndarray) -> int:
     if audio.size == 0:
         return -120
     rms = float(np.sqrt(np.mean(np.square(audio, dtype=np.float64))))
-    return int(round(np.clip(20 * np.log10(max(rms, 1e-6)), -120, 0)))
+    return round(np.clip(20 * np.log10(max(rms, 1e-6)), -120, 0))
+
+
+def _audio_quality_db(audio: np.ndarray, bandwidth_hz: int) -> int:
+    """Measure useful audio structure without being fooled by playback AGC.
+
+    White noise has a flat spectrum while speech, music, and tones concentrate
+    energy into a smaller set of bins.  Spectral flatness is independent of
+    amplitude, so the AM/FM normalisation used for listening cannot turn hiss
+    into a high-quality result.  Silence is explicitly zero quality.
+    """
+    if audio.size < 32 or float(np.max(np.abs(audio))) < 1e-6:
+        return 0
+    centered = audio - np.mean(audio)
+    power = np.abs(np.fft.rfft(centered * np.hanning(len(centered)))) ** 2
+    frequencies = np.fft.rfftfreq(len(centered), 1 / AUDIO_RATE)
+    power = power[(frequencies >= 100) & (frequencies <= bandwidth_hz)]
+    if power.size == 0:
+        return 0
+    arithmetic_mean = float(np.mean(power))
+    if arithmetic_mean <= 1e-20:
+        return 0
+    floor = max(arithmetic_mean * 1e-12, 1e-24)
+    geometric_mean = float(np.exp(np.mean(np.log(np.maximum(power, floor)))))
+    return round(np.clip(-10 * np.log10(geometric_mean / arithmetic_mean), 0, 60))
 
 
 def _decimate_lowpass(
@@ -307,7 +332,7 @@ class RtlSdrBridge:
         if needs_direct != self._direct_sampling_active:
             try:
                 self._sdr.set_direct_sampling(DIRECT_SAMPLING_MODE if needs_direct else 0)
-            except Exception:
+            except Exception:  # noqa: BLE001 -- librtlsdr exposes backend-specific errors
                 # Some librtlsdr/R820T combinations apply the mode change but
                 # return LIBUSB_ERROR_IO while reinitialising the tuner. Reopen
                 # the device into a known state instead of retrying forever
@@ -415,7 +440,7 @@ class RtlSdrBridge:
         self._apply_frequency(freq)
         prev_fm_sample: complex | None = None
         filter_zi: np.ndarray | None = None
-        signal_history: deque[tuple[int, int, int]] = deque(maxlen=12)
+        signal_history: deque[tuple[int, int, int, int]] = deque(maxlen=12)
 
         while not self._stop.is_set():
             # The whole iteration is one try/except: this thread has no
@@ -446,10 +471,14 @@ class RtlSdrBridge:
                     metrics = _estimate_signal(iq, AM_CHANNEL_BW_HZ)
 
                 audio_dbfs = _audio_level_dbfs(audio)
-                signal_history.append((*metrics, audio_dbfs))
-                signal_db = int(round(float(np.median([item[0] for item in signal_history]))))
-                noise_dbfs = int(round(float(np.median([item[1] for item in signal_history]))))
-                audio_dbfs = int(round(float(np.median([item[2] for item in signal_history]))))
+                quality_db = _audio_quality_db(
+                    audio, FM_AUDIO_BW_HZ if mode == "FM" else AM_AUDIO_BW_HZ
+                )
+                signal_history.append((*metrics, audio_dbfs, quality_db))
+                signal_db = round(float(np.median([item[0] for item in signal_history])))
+                noise_dbfs = round(float(np.median([item[1] for item in signal_history])))
+                audio_dbfs = round(float(np.median([item[2] for item in signal_history])))
+                quality_db = round(float(np.median([item[3] for item in signal_history])))
 
                 with self._state_lock:
                     volume = self._volume
@@ -467,6 +496,7 @@ class RtlSdrBridge:
                         signal_db=signal_db,
                         noise_dbfs=noise_dbfs,
                         audio_dbfs=audio_dbfs,
+                        quality_db=quality_db,
                         volume=volume,
                         seq=self._seq,
                     )
