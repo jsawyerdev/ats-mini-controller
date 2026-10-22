@@ -83,7 +83,6 @@ class RadioStatus:
     signal_db: int  # in-channel power above the nearby RF noise floor
     noise_dbfs: int  # nearby RF noise floor, relative dBFS (diagnostic only)
     audio_dbfs: int  # demodulated audio RMS; -120 means digital silence
-    quality_db: int  # spectral structure above noise-like audio; higher is more listenable
     volume: int  # software playback gain, 0-100
     seq: int
 
@@ -186,30 +185,6 @@ def _audio_level_dbfs(audio: np.ndarray) -> int:
         return -120
     rms = float(np.sqrt(np.mean(np.square(audio, dtype=np.float64))))
     return round(np.clip(20 * np.log10(max(rms, 1e-6)), -120, 0))
-
-
-def _audio_quality_db(audio: np.ndarray, bandwidth_hz: int) -> int:
-    """Measure useful audio structure without being fooled by playback AGC.
-
-    White noise has a flat spectrum while speech, music, and tones concentrate
-    energy into a smaller set of bins.  Spectral flatness is independent of
-    amplitude, so the AM/FM normalisation used for listening cannot turn hiss
-    into a high-quality result.  Silence is explicitly zero quality.
-    """
-    if audio.size < 32 or float(np.max(np.abs(audio))) < 1e-6:
-        return 0
-    centered = audio - np.mean(audio)
-    power = np.abs(np.fft.rfft(centered * np.hanning(len(centered)))) ** 2
-    frequencies = np.fft.rfftfreq(len(centered), 1 / AUDIO_RATE)
-    power = power[(frequencies >= 100) & (frequencies <= bandwidth_hz)]
-    if power.size == 0:
-        return 0
-    arithmetic_mean = float(np.mean(power))
-    if arithmetic_mean <= 1e-20:
-        return 0
-    floor = max(arithmetic_mean * 1e-12, 1e-24)
-    geometric_mean = float(np.exp(np.mean(np.log(np.maximum(power, floor)))))
-    return round(np.clip(-10 * np.log10(geometric_mean / arithmetic_mean), 0, 60))
 
 
 def _decimate_lowpass(
@@ -440,7 +415,7 @@ class RtlSdrBridge:
         self._apply_frequency(freq)
         prev_fm_sample: complex | None = None
         filter_zi: np.ndarray | None = None
-        signal_history: deque[tuple[int, int, int, int]] = deque(maxlen=12)
+        signal_history: deque[tuple[int, int, int]] = deque(maxlen=12)
 
         while not self._stop.is_set():
             # The whole iteration is one try/except: this thread has no
@@ -471,14 +446,10 @@ class RtlSdrBridge:
                     metrics = _estimate_signal(iq, AM_CHANNEL_BW_HZ)
 
                 audio_dbfs = _audio_level_dbfs(audio)
-                quality_db = _audio_quality_db(
-                    audio, FM_AUDIO_BW_HZ if mode == "FM" else AM_AUDIO_BW_HZ
-                )
-                signal_history.append((*metrics, audio_dbfs, quality_db))
+                signal_history.append((*metrics, audio_dbfs))
                 signal_db = round(float(np.median([item[0] for item in signal_history])))
                 noise_dbfs = round(float(np.median([item[1] for item in signal_history])))
                 audio_dbfs = round(float(np.median([item[2] for item in signal_history])))
-                quality_db = round(float(np.median([item[3] for item in signal_history])))
 
                 with self._state_lock:
                     volume = self._volume
@@ -496,7 +467,6 @@ class RtlSdrBridge:
                         signal_db=signal_db,
                         noise_dbfs=noise_dbfs,
                         audio_dbfs=audio_dbfs,
-                        quality_db=quality_db,
                         volume=volume,
                         seq=self._seq,
                     )

@@ -77,14 +77,14 @@ def test_station_signal_sort_is_numeric_global_and_unscanned_last(tmp_path) -> N
     with sqlite3.connect(signal_path) as conn:
         conn.execute(
             "CREATE TABLE signal_measurements (freq_hz INTEGER PRIMARY KEY, signal_db INTEGER, "
-            "noise_dbfs INTEGER, audio_dbfs INTEGER, quality_db INTEGER, measured_at REAL)"
+            "noise_dbfs INTEGER, audio_dbfs INTEGER, measured_at REAL)"
         )
         conn.executemany(
-            "INSERT INTO signal_measurements VALUES (?, ?, -50, -20, 10, 1.0)",
+            "INSERT INTO signal_measurements VALUES (?, ?, -50, -20, 1.0)",
             [(91_000_000, 7), (92_000_000, 21)],
         )
         conn.execute(
-            "INSERT INTO signal_measurements VALUES (94000000, 30, -50, -11, 3, 1.0)"
+            "INSERT INTO signal_measurements VALUES (94000000, 30, -50, -120, 1.0)"
         )
 
     original_db_path = app.DB_PATH
@@ -133,6 +133,15 @@ def test_scan_cancel_sets_shared_cancellation_event() -> None:
         app.scan_cancel.clear()
 
 
+def test_viability_uses_band_specific_rf_thresholds_and_rejects_silence() -> None:
+    assert app._is_viable("FM", signal_db=6, audio_dbfs=-20)
+    assert not app._is_viable("FM", signal_db=5, audio_dbfs=-20)
+    assert app._is_viable("AM", signal_db=10, audio_dbfs=-20)
+    assert app._is_viable("SW", signal_db=10, audio_dbfs=-20)
+    assert not app._is_viable("SW", signal_db=9, audio_dbfs=-20)
+    assert not app._is_viable("FM", signal_db=30, audio_dbfs=-120)
+
+
 def test_scan_targets_dedupe_conflicting_band_labels(tmp_path) -> None:
     stations_path = tmp_path / "stations.db"
     with sqlite3.connect(stations_path) as conn:
@@ -171,9 +180,7 @@ def test_signal_store_migrates_existing_measurements_with_unknown_audio(tmp_path
         with sqlite3.connect(signal_path) as conn:
             columns = {row[1] for row in conn.execute("PRAGMA table_info(signal_measurements)")}
         assert "audio_dbfs" in columns
-        assert "quality_db" in columns
         assert app.signal_cache[963_000]["audio_dbfs"] is None
-        assert app.signal_cache[963_000]["quality_db"] is None
     finally:
         app.SIGNAL_DB_PATH = original_path
         app.signal_cache.clear()

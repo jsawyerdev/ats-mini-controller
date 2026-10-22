@@ -335,7 +335,7 @@ function rssiCell(s) {
   const pct = Math.max(4, Math.min(100, s.signal_db * (100 / 30)));
   const weak = !isAudible(s);
   return `<span class="rssi-bar${weak ? ' rssi-weak' : ''}"><span style="width:${pct}%"></span></span>` +
-    `<span class="rssi-val">+${s.signal_db} dB RF / ${s.quality_db ?? '-'} dB quality</span>`;
+    `<span class="rssi-val">+${s.signal_db} dB above noise</span>`;
 }
 
 async function refresh() {
@@ -597,7 +597,7 @@ async function findNextStrongest() {
     await tune(best.freq_hz, station ? station.band : bandEl.value);
     seekResultEl.textContent =
       `Found: ${fmtFreq(best.freq_hz)}${station ? ' - ' + station.name : ''} `
-      + `(signal +${best.signal_db} dB, quality ${best.quality_db} dB) `
+      + `(signal +${best.signal_db} dB above noise) `
       + `[${batch.offset}-${batch.offset + targets.length} of ${batch.total}]`;
     seekOffset = batch.offset + 200 >= batch.total ? 0 : batch.offset + 200;
     refresh();
@@ -811,7 +811,7 @@ es.onmessage = (e) => {
   document.getElementById('m-mode').textContent = `${st.band} / ${st.mode}`;
   document.getElementById('m-rssi').textContent = '+' + st.signal_db + ' dB';
   document.getElementById('m-snr').textContent = st.noise_dbfs + ' dBFS';
-  document.getElementById('m-audio').textContent = `${st.audio_dbfs} dBFS / ${st.quality_db} dB quality`;
+  document.getElementById('m-audio').textContent = st.audio_dbfs + ' dBFS';
   document.getElementById('m-vol').textContent = st.volume;
   linkDot.className = 'dot on';
   linkTxt.textContent = 'Live';

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.5.1 - 2026-10-22
+
+### Fixed
+
+- Viability now uses hardware-calibrated RF thresholds: 6 dB for tuner-path FM and 10 dB for
+  noisier direct-sampled AM/SW, with silent demodulation rejected in both cases.
+- Removed the experimental spectral-flatness gate after live A/B validation showed that it could
+  not distinguish an audible FM station from an empty channel.
+
 ## 2.5.0 - 2026-10-22
 
 ### Fixed
@@ -8,6 +17,7 @@
   playback volume, which previously promoted amplified hiss as something worth listening to.
 - Strongest-signal sorting and filtering require both a signal above the local RF floor and
   non-noise-like audio. Existing measurements remain unclassified until rescanned.
+- Audio quality uses a rolling window long enough to distinguish programme structure from hiss.
 
 ## 2.4.0 - 2026-10-22
 
