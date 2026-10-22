@@ -1,0 +1,26 @@
+services:
+  ats-mini-controller:
+    build: .
+    container_name: ats-mini-controller
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "8731:8731"
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    device_cgroup_rules:
+      - "c 189:* rmw" # USB device char devices, for the RTL-SDR dongle
+    volumes:
+      - ./data:/app/data
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    environment:
+      # DEBUG adds per-target scan tracing, individual tune calls, and
+      # direct-sampling toggles - INFO (default) only logs scan
+      # start/end summaries, radio connect, and errors.
+      - LOG_LEVEL=DEBUG

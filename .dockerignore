@@ -1,0 +1,9 @@
+.git
+.codegraph
+__pycache__
+*.pyc
+docs/screenshots
+data/fcc_am_raw.txt
+data/fcc_fm_raw.txt
+data/.fcc_urls.txt
+firmware_update

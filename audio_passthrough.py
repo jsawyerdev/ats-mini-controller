@@ -1,52 +1,40 @@
-"""Live audio passthrough: copies the USB audio interface's input (the ATS
-Mini's headphone-out) straight to the Mac's speakers in real time, so
-whatever the radio is tuned to is audible without touching anything else -
-retuning the radio (e.g. clicking a station) just changes what comes out,
-since this is a dumb continuous copy, not something that needs to know
-about frequencies at all.
+"""Streams the RTL-SDR bridge's live demodulated audio to the browser over
+WebSocket. Replaces the old local USB-audio-interface passthrough: an
+RTL-SDR has no analog audio output to capture from a sound card - the
+demodulated audio only exists as PCM inside this process - so getting it to
+the listener now means sending it over the network to be decoded and played
+by the browser's Web Audio API, instead of copying it to a local speaker.
+
+Unlike the old passthrough, this needs no exclusive access to anything: any
+number of browser tabs can subscribe at once, and it runs alongside the CW
+monitor without contention, since both just read the same underlying stream.
 
 Author: James Sawyer / JSLabs - https://www.jamessawyer.co.uk/ | https://labs.jamessawyer.co.uk/
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
-import numpy as np
-import sounddevice as sd
+from fastapi import WebSocket, WebSocketDisconnect
+
+from radio_bridge import RtlSdrBridge
 
 logger = logging.getLogger(__name__)
 
 
-class AudioPassthrough:
-    def __init__(self, input_device: int, output_device: int | None = None):
-        self._input_device = input_device
-        self._output_device = output_device
-        self._stream: sd.Stream | None = None
-
-    def _callback(self, indata: np.ndarray, outdata: np.ndarray, frames, time_info, status) -> None:
-        if status:
-            logger.debug("audio passthrough stream status: %s", status)
-        # Input is mono (1 channel from the USB adapter); broadcast it to
-        # however many output channels the speakers expect (usually 2).
-        outdata[:] = np.repeat(indata, outdata.shape[1], axis=1)
-
-    def start(self) -> None:
-        if self._stream is not None:
-            return
-        self._stream = sd.Stream(
-            device=(self._input_device, self._output_device),
-            channels=(1, 2),
-            callback=self._callback,
-        )
-        self._stream.start()
-
-    def stop(self) -> None:
-        if self._stream is not None:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
-
-    @property
-    def running(self) -> bool:
-        return self._stream is not None
+async def serve_audio_websocket(websocket: WebSocket, bridge: RtlSdrBridge) -> None:
+    """Accept a browser's WebSocket connection and push it 16-bit mono PCM
+    frames at radio_bridge.AUDIO_RATE until it disconnects."""
+    await websocket.accept()
+    loop = asyncio.get_running_loop()
+    subscriber_id, queue = bridge.subscribe_audio(loop)
+    try:
+        while True:
+            chunk = await queue.get()
+            await websocket.send_bytes(chunk)
+    except WebSocketDisconnect:
+        logger.debug("audio websocket client disconnected")
+    finally:
+        bridge.unsubscribe_audio(subscriber_id)

@@ -3,7 +3,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>ATS Mini Controller</title>
+<title>RTL-SDR Station Browser</title>
 <style>
   :root {
     --navy-dk: #061024;
@@ -157,7 +157,7 @@
 </head>
 <body>
 <header>
-  <h1>ATS Mini &middot; Station Browser</h1>
+  <h1>RTL-SDR &middot; Station Browser</h1>
   <div id="tabs">
     <button class="tab-btn active" data-tab="stations">Stations</button>
     <button class="tab-btn" data-tab="cw">CW Monitor</button>
@@ -166,13 +166,13 @@
 <div id="meter">
   <div class="stat"><span class="label">Frequency</span><span class="value" id="m-freq">-</span></div>
   <div class="stat"><span class="label">Band / Mode</span><span class="value" id="m-mode">-</span></div>
-  <div class="stat"><span class="label">RSSI</span><span class="value" id="m-rssi">-</span></div>
-  <div class="stat"><span class="label">SNR</span><span class="value" id="m-snr">-</span></div>
+  <div class="stat"><span class="label">Signal</span><span class="value" id="m-rssi">-</span></div>
+  <div class="stat"><span class="label">Noise</span><span class="value" id="m-snr">-</span></div>
   <div class="stat"><span class="label">Volume</span><span class="value">
     <button id="vol-down" class="vol-btn">&minus;</button><span id="m-vol">-</span><button id="vol-up" class="vol-btn">+</button>
   </span></div>
   <div class="stat"><span class="label">Link</span><span class="value"><span id="m-link" class="dot off"></span><span id="m-link-txt">-</span></span></div>
-  <div class="stat"><span class="label">Audio to Mac</span><button id="passthrough-toggle" class="vol-btn" style="padding:4px 10px;">Off</button></div>
+  <div class="stat"><span class="label">Audio</span><button id="audio-toggle" class="vol-btn" style="padding:4px 10px;">Off</button></div>
 </div>
 
 <div id="stations-view" class="tab-view">
@@ -186,11 +186,13 @@
     </select>
     <label class="toggle"><input id="active-only" type="checkbox"> On air now</label>
     <label class="toggle"><input id="audible-only" type="checkbox"> Audible only (scanned)</label>
-    <button id="scan-btn">Scan RSSI (visible)</button>
+    <button id="scan-btn">Scan signals (visible)</button>
+    <button id="seek-btn">Find next strongest</button>
     <span id="result-count" style="font-size:12px;color:var(--text-dim);"></span>
+    <span id="seek-result" style="font-size:12px;color:var(--text-dim);"></span>
   </div>
   <table>
-    <thead><tr><th></th><th>Freq</th><th>Band</th><th>Name</th><th>Country</th><th>Language</th><th>On air (local)</th><th>RSSI</th></tr></thead>
+    <thead><tr><th></th><th>Freq</th><th>Band</th><th>Name</th><th>Country</th><th>Language</th><th>On air (local)</th><th>Signal</th></tr></thead>
     <tbody id="rows"></tbody>
   </table>
   <div id="pager">
@@ -220,6 +222,8 @@ const bandEl = document.getElementById('band');
 const activeOnlyEl = document.getElementById('active-only');
 const audibleOnlyEl = document.getElementById('audible-only');
 const scanBtn = document.getElementById('scan-btn');
+const seekBtn = document.getElementById('seek-btn');
+const seekResultEl = document.getElementById('seek-result');
 const resultCountEl = document.getElementById('result-count');
 const pagePrevEl = document.getElementById('page-prev');
 const pageNextEl = document.getElementById('page-next');
@@ -231,7 +235,7 @@ const cwMonitorToggleBtn = document.getElementById('cw-monitor-toggle');
 const cwStatusEl = document.getElementById('cw-status');
 const cwInProgressEl = document.getElementById('cw-inprogress');
 const cwLogEl = document.getElementById('cw-log');
-const passthroughToggleBtn = document.getElementById('passthrough-toggle');
+const audioToggleBtn = document.getElementById('audio-toggle');
 const PAGE_SIZE = 500;
 let tunedFreq = null;
 let currentStations = [];
@@ -239,16 +243,10 @@ let tuning = false;
 let pageOffset = 0;
 let pageTotal = 0;
 
-// Heuristic only: the SI4732's RSSI/SNR readings are noisy and threshold
-// choice is a judgment call, not a spec. rssi in dBuV, snr in dB.
-// SNR is only meaningful in FM: the underlying SI4735 chip/library reports
-// SNR=0 for AM/SW regardless of actual signal quality (a hardware/library
-// characteristic, confirmed against the firmware source, not a bug here),
-// so audibility falls back to RSSI alone outside FM.
+// Six dB means roughly four times the nearby noise power. This avoids
+// classifying broadband noise as a station merely because gain is high.
 function isAudible(s) {
-  if (s.rssi === null || s.rssi === undefined) return false;
-  if (s.band !== 'FM') return s.rssi >= 10;
-  return s.rssi >= 10 || s.snr >= 3;
+  return s.signal_db !== null && s.signal_db !== undefined && s.signal_db >= 6;
 }
 
 const DAY_ABBR = ['Su','Mo','Tu','We','Th','Fr','Sa']; // JS getUTCDay(): 0=Sun
@@ -310,12 +308,11 @@ function localTimeLabel(station) {
 }
 
 function rssiCell(s) {
-  if (s.rssi === null || s.rssi === undefined) return '<span class="rssi-val">-</span>';
-  const pct = Math.max(4, Math.min(100, s.rssi));
+  if (s.signal_db === null || s.signal_db === undefined) return '<span class="rssi-val">-</span>';
+  const pct = Math.max(4, Math.min(100, s.signal_db * (100 / 30)));
   const weak = !isAudible(s);
-  const snrLabel = s.band === 'FM' ? `${s.snr}dB` : 'n/a';
   return `<span class="rssi-bar${weak ? ' rssi-weak' : ''}"><span style="width:${pct}%"></span></span>` +
-    `<span class="rssi-val">${s.rssi} / ${snrLabel}</span>`;
+    `<span class="rssi-val">+${s.signal_db} dB / ${s.noise_dbfs} dBFS</span>`;
 }
 
 async function refresh() {
@@ -413,6 +410,84 @@ async function scanVisible() {
     refresh();
   }
 }
+
+// Offset into the FULL filtered station list (not just the currently
+// displayed page) that "Find next strongest" has worked through so far.
+// Each click scans the next 200-station window and advances past it, so
+// repeated clicks sweep the whole filtered set instead of rescanning the
+// same first page over and over. Wraps back to 0 past the end.
+let seekOffset = 0;
+
+async function fetchSeekBatch() {
+  const params = new URLSearchParams({
+    q: qEl.value, band: bandEl.value, limit: 200, offset: seekOffset,
+  });
+  const res = await fetch(`/api/stations?${params}`);
+  return res.json();
+}
+
+async function findNextStrongest() {
+  seekBtn.disabled = true;
+  const before = seekBtn.textContent;
+  try {
+    let batch = await fetchSeekBatch();
+    let targets = [];
+    // A batch can come back empty after the "On air now" filter (or past
+    // the end of the list) - step forward through a few more batches
+    // rather than reporting nothing found on the first empty one.
+    for (let attempts = 0; attempts < 10; attempts++) {
+      if (batch.stations.length === 0) {
+        if (batch.total === 0) break;
+        seekOffset = 0; // ran past the end - wrap around
+        batch = await fetchSeekBatch();
+        continue;
+      }
+      targets = batch.stations
+        .filter(s => activeOnlyEl.checked ? isActiveNow(s) : true)
+        .map(s => ({ freq_hz: s.freq_hz, band: s.band }));
+      if (targets.length > 0) break;
+      seekOffset = batch.offset + 200 >= batch.total ? 0 : batch.offset + 200;
+      batch = await fetchSeekBatch();
+    }
+    if (targets.length === 0) {
+      seekResultEl.textContent = 'Nothing to scan (check filters).';
+      return;
+    }
+    seekBtn.textContent = `Scanning ${targets.length} @ offset ${batch.offset}...`;
+    const scanRes = await fetch('/api/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stations: targets }),
+    });
+    const data = await scanRes.json();
+    if (data.results.length === 0) {
+      seekResultEl.textContent = 'No results from this batch - try again.';
+      return;
+    }
+    const clearSignals = data.results.filter(result => result.signal_db >= 6);
+    if (clearSignals.length === 0) {
+      seekResultEl.textContent = 'No channel in this batch was clearly above the noise floor.';
+      seekOffset = batch.offset + 200 >= batch.total ? 0 : batch.offset + 200;
+      refresh();
+      return;
+    }
+    const best = clearSignals.reduce((a, b) => (b.signal_db > a.signal_db ? b : a));
+    const station = batch.stations.find(s => s.freq_hz === best.freq_hz);
+    await tune(best.freq_hz, station ? station.band : bandEl.value);
+    seekResultEl.textContent =
+      `Found: ${fmtFreq(best.freq_hz)}${station ? ' - ' + station.name : ''} `
+      + `(signal +${best.signal_db} dB, noise ${best.noise_dbfs} dBFS) `
+      + `[${batch.offset}-${batch.offset + targets.length} of ${batch.total}]`;
+    seekOffset = batch.offset + 200 >= batch.total ? 0 : batch.offset + 200;
+    refresh();
+  } finally {
+    seekBtn.disabled = false;
+    seekBtn.textContent = before;
+  }
+}
+
+bandEl.addEventListener('change', () => { seekOffset = 0; seekResultEl.textContent = ''; });
+qEl.addEventListener('input', () => { seekOffset = 0; });
 
 async function cwListen() {
   cwListenBtn.disabled = true;
@@ -514,31 +589,64 @@ bandEl.addEventListener('change', resetToFirstPage);
 activeOnlyEl.addEventListener('change', render);
 audibleOnlyEl.addEventListener('change', render);
 scanBtn.addEventListener('click', scanVisible);
+seekBtn.addEventListener('click', findNextStrongest);
 volUpEl.addEventListener('click', () => fetch('/api/volume/up', { method: 'POST' }));
 volDownEl.addEventListener('click', () => fetch('/api/volume/down', { method: 'POST' }));
 
-let passthroughOn = false;
-async function refreshPassthroughStatus() {
-  const res = await fetch('/api/audio/passthrough/status');
-  const s = await res.json();
-  passthroughOn = s.running;
-  passthroughToggleBtn.textContent = passthroughOn ? 'On' : 'Off';
-  passthroughToggleBtn.style.background = passthroughOn ? 'var(--green)' : '';
+// Demodulated audio only exists as PCM inside the server process (an
+// RTL-SDR has no analog audio-out to capture from a sound card like the ATS
+// Mini did), so "listening" means streaming 16-bit mono PCM over WebSocket
+// and playing it here via Web Audio, scheduling each incoming chunk
+// back-to-back on the audio clock rather than firing it immediately (which
+// would click/overlap under any network jitter).
+const AUDIO_SAMPLE_RATE = 48000;
+let audioSocket = null;
+let audioCtx = null;
+let audioNextPlayTime = 0;
+
+function stopAudio() {
+  if (audioSocket) { audioSocket.onclose = null; audioSocket.close(); audioSocket = null; }
+  if (audioCtx) { audioCtx.close(); audioCtx = null; }
+  audioToggleBtn.textContent = 'Off';
+  audioToggleBtn.style.background = '';
 }
-passthroughToggleBtn.addEventListener('click', async () => {
-  passthroughToggleBtn.disabled = true;
-  try {
-    const res = await fetch(passthroughOn ? '/api/audio/passthrough/stop' : '/api/audio/passthrough/start', { method: 'POST' });
-    if (!res.ok) {
-      const err = await res.json();
-      alert(err.detail || 'Could not toggle audio passthrough');
-    }
-  } finally {
-    passthroughToggleBtn.disabled = false;
-    refreshPassthroughStatus();
-  }
+
+function startAudio() {
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  // Some browsers (Safari in particular) can create an AudioContext in a
+  // 'suspended' state even from within a click handler's gesture, silently
+  // dropping every scheduled buffer with no error - resume() is a no-op if
+  // it's already running, so this is safe to always call.
+  audioCtx.resume();
+  audioNextPlayTime = audioCtx.currentTime;
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  audioSocket = new WebSocket(`${proto}//${location.host}/ws/audio`);
+  audioSocket.binaryType = 'arraybuffer';
+  audioSocket.onopen = () => {
+    audioCtx.resume();
+    audioToggleBtn.textContent = 'On';
+    audioToggleBtn.style.background = 'var(--green)';
+  };
+  audioSocket.onmessage = (e) => {
+    const int16 = new Int16Array(e.data);
+    const float32 = new Float32Array(int16.length);
+    for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768;
+    const buffer = audioCtx.createBuffer(1, float32.length, AUDIO_SAMPLE_RATE);
+    buffer.copyToChannel(float32, 0);
+    const source = audioCtx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioCtx.destination);
+    const startAt = Math.max(audioNextPlayTime, audioCtx.currentTime);
+    source.start(startAt);
+    audioNextPlayTime = startAt + buffer.duration;
+  };
+  audioSocket.onerror = (e) => { console.error('audio websocket error', e); stopAudio(); };
+  audioSocket.onclose = () => stopAudio();
+}
+
+audioToggleBtn.addEventListener('click', () => {
+  if (audioSocket) stopAudio(); else startAudio();
 });
-refreshPassthroughStatus();
 pagePrevEl.addEventListener('click', () => { pageOffset = Math.max(0, pageOffset - PAGE_SIZE); refresh(); });
 pageNextEl.addEventListener('click', () => { pageOffset += PAGE_SIZE; refresh(); });
 refresh();
@@ -549,23 +657,10 @@ const linkTxt = document.getElementById('m-link-txt');
 const es = new EventSource('/api/status/stream');
 es.onmessage = (e) => {
   const st = JSON.parse(e.data);
-  if (st.tuning) {
-    // Suppress the intermediate band hops a tune-in-progress produces —
-    // showing every one made the meter look like it was "skipping around".
-    document.getElementById('m-freq').textContent = 'Tuning...';
-    document.getElementById('m-mode').textContent = '-';
-    document.getElementById('m-rssi').textContent = '-';
-    document.getElementById('m-snr').textContent = '-';
-    linkDot.className = 'dot on';
-    linkTxt.textContent = 'Live';
-    return;
-  }
   document.getElementById('m-freq').textContent = fmtFreq(st.frequency_hz);
   document.getElementById('m-mode').textContent = `${st.band} / ${st.mode}`;
-  document.getElementById('m-rssi').textContent = st.rssi + ' dBuV';
-  // The SI4735 chip only computes SNR meaningfully in FM; it reports a flat
-  // 0 in AM/SW regardless of actual signal quality (see isAudible() above).
-  document.getElementById('m-snr').textContent = st.band === 'VHF' ? st.snr + ' dB' : 'n/a';
+  document.getElementById('m-rssi').textContent = '+' + st.signal_db + ' dB';
+  document.getElementById('m-snr').textContent = st.noise_dbfs + ' dBFS';
   document.getElementById('m-vol').textContent = st.volume;
   linkDot.className = 'dot on';
   linkTxt.textContent = 'Live';

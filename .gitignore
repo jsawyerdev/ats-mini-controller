@@ -1,9 +1,11 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.codegraph/
 
 # Runtime state, not source data - regenerated on first run / first scan
 data/rssi_cache.db
+data/signal_cache.db
 
 # Raw regulator/schedule downloads used to build data/stations.db - large,
 # re-fetchable via the URLs in stations_db.py, not needed to run the app

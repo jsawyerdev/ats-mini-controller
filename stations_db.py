@@ -75,7 +75,14 @@ def load_eibi(path: Path) -> list[dict]:
 # license exports. Regulator export formats vary and can change; this sniffs
 # a best-effort match rather than assuming one fixed schema.
 _FREQ_KEYS = ("frequency", "freq", "channel_freq", "freq_mhz", "freq_khz")
-_NAME_KEYS = ("callsign", "call_sign", "station_name", "station", "name", "service_name")
+_NAME_KEYS = (
+    "callsign",
+    "call_sign",
+    "station_name",
+    "station",
+    "name",
+    "service_name",
+)
 _COUNTRY_KEYS = ("country", "state", "province", "region", "area", "city")
 
 
@@ -100,7 +107,11 @@ def load_fcc_pipe(path: Path, band: str) -> list[dict]:
             )
             if country_idx is None or not callsign or not freq_raw:
                 continue
-            city, state, country = parts[country_idx - 2], parts[country_idx - 1], parts[country_idx]
+            city, state, country = (
+                parts[country_idx - 2],
+                parts[country_idx - 1],
+                parts[country_idx],
+            )
             try:
                 freq_val = float(freq_raw.split()[0])
             except (ValueError, IndexError):
@@ -170,7 +181,9 @@ def load_regulator_csv(path: Path, source: str, band: str) -> list[dict]:
                     "freq_hz": freq_hz,
                     "band": band,
                     "name": (row.get(name_col) or "").strip(),
-                    "country": (row.get(country_col) or "").strip() if country_col else "",
+                    "country": (
+                        (row.get(country_col) or "").strip() if country_col else ""
+                    ),
                     "mode": "FM" if band == "FM" else "AM",
                     "time_range": "",
                     "days_code": "",
@@ -181,19 +194,26 @@ def load_regulator_csv(path: Path, source: str, band: str) -> list[dict]:
     return rows
 
 
-_TEXT_COLUMNS = ("band", "name", "country", "mode", "time_range", "days_code", "language", "source")
+_TEXT_COLUMNS = (
+    "band",
+    "name",
+    "country",
+    "mode",
+    "time_range",
+    "days_code",
+    "language",
+    "source",
+)
 
 
 def write_sqlite(rows: list[dict], db_path: Path) -> None:
     db_path.unlink(missing_ok=True)
     conn = sqlite3.connect(db_path)
-    conn.execute(
-        f"""
+    conn.execute(f"""
         CREATE TABLE stations (
             {", ".join(f"{c} TEXT" if c in _TEXT_COLUMNS else f"{c} INTEGER" for c in _COLUMNS)}
         )
-        """
-    )
+        """)
     conn.executemany(
         f"INSERT INTO stations ({', '.join(_COLUMNS)}) VALUES ({', '.join('?' for _ in _COLUMNS)})",
         [tuple(row[c] for c in _COLUMNS) for row in rows],

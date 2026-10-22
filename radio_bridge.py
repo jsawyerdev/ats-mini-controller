@@ -1,352 +1,449 @@
-"""USB serial bridge for the ATS Mini (esp32-si4732 firmware, ad-hoc serial protocol).
+"""RTL-SDR USB dongle bridge: tunes an RTL2832U-based SDR by directly setting
+its center frequency and demodulates AM/FM/CW in software from the raw IQ
+stream. There is no firmware, no serial protocol, and no fixed band list to
+navigate - a retune is a single register write, unlike the ATS Mini's
+multi-second band-search this replaced.
 
-Protocol reference: https://esp32-si4732.github.io/ats-mini/remote.html
-Single-character commands drive the receiver; the 't' command toggles a
-continuous CSV telemetry stream (frequency, RSSI, SNR, etc.).
+FM broadcast (88-108 MHz) is within the R820T tuner's normal PLL range
+(~24 MHz-1.7 GHz). AM/mediumwave (530-1700 kHz) and shortwave (1.6-30 MHz)
+are both below that floor, so those bands are received via the RTL2832U's
+direct-sampling ADC input instead of the normal tuner path. Direct sampling
+is a standard RTL2832U capability (confirmed working on this dongle: it
+enables and tunes without error), but whether a given board's PCB actually
+routes that pin to a usable antenna path with adequate sensitivity varies -
+AM/SW reception quality on this specific dongle is unverified until tested
+against a real antenna and a known signal.
 
 Author: James Sawyer / JSLabs - https://www.jamessawyer.co.uk/ | https://labs.jamessawyer.co.uk/
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 
-import serial
-import serial.tools.list_ports
+import numpy as np
+from rtlsdr import RtlSdr
+from scipy.signal import butter, sosfilt, sosfilt_zi
 
 logger = logging.getLogger(__name__)
 
-BAUD_RATE = 115200
+IQ_SAMPLE_RATE = 960_000  # Hz; well within the RTL2832U's reliable high-rate range
+AUDIO_RATE = 48_000  # Hz; matches cw_decoder/cw_monitor's expected samplerate
+_DECIMATION = IQ_SAMPLE_RATE // AUDIO_RATE  # 20
+CHUNK_IQ_SAMPLES = 32_768  # ~34 ms per read
 
-# Espressif's assigned USB vendor ID; the ESP32-S3's native USB-JTAG/serial
-# port always reports this regardless of which /dev/cu.usbmodemNNNN path the
-# OS happens to assign it (that path changes across reconnects and even
-# across reboots, which repeatedly broke a hardcoded path in practice).
-_ESPRESSIF_VID = 0x303A
+# The R820T's PLL can't lock below roughly this; anything under it needs
+# direct sampling instead of the normal tuner path.
+DIRECT_SAMPLING_THRESHOLD_HZ = 28_800_000
+DIRECT_SAMPLING_MODE = 2  # Q-branch; the commonly-wired input on most boards
+
+# One of the R820T's supported gain steps (confirmed via `rtl_test -t` on
+# this dongle: 0.0 ... 49.6 dB in 29 steps). Fixed rather than "auto" - see
+# the comment in RtlSdrBridge.__init__.
+DEFAULT_GAIN_DB = 40.2
+
+CW_TONE_LOWPASS_HZ = 2_000  # keeps cw_decoder's 300-1200Hz search band, rejects the rest
+AM_AUDIO_BW_HZ = 5_000
+FM_AUDIO_BW_HZ = 15_000
+
+# Precomputed once rather than rebuilt every chunk (butter() isn't free),
+# and shared with the persistent-zi handling in _decimate_lowpass below.
+_AM_SOS = butter(4, AM_AUDIO_BW_HZ, btype="low", fs=IQ_SAMPLE_RATE, output="sos")
+_FM_SOS = butter(4, FM_AUDIO_BW_HZ, btype="low", fs=IQ_SAMPLE_RATE, output="sos")
+_CW_SOS = butter(4, CW_TONE_LOWPASS_HZ, btype="low", fs=IQ_SAMPLE_RATE, output="sos")
+
+# RF channel bandwidths used to compare the tuned channel with nearby noise.
+FM_CHANNEL_BW_HZ = 200_000  # broadcast FM: +/-75kHz deviation plus guard
+AM_CHANNEL_BW_HZ = 10_000  # AM/SW broadcast: roughly double the audio bandwidth
+CW_CHANNEL_BW_HZ = 4_000  # narrow - just enough to contain the beat tone
+
+_AUDIO_HISTORY_S = 60.0  # ring buffer depth for capture_audio()
 
 
-def find_ats_mini_port() -> str | None:
-    for port in serial.tools.list_ports.comports():
-        if port.vid == _ESPRESSIF_VID:
-            return port.device
-    return None
-
-# CSV field order emitted by the 't' monitor stream.
-_STATUS_FIELDS = (
-    "app_version",
-    "frequency",
-    "bfo",
-    "band_cal",
-    "band",
-    "mode",
-    "step_idx",
-    "bandwidth_idx",
-    "agc_idx",
-    "volume",
-    "rssi",
-    "snr",
-    "tuning_capacitor",
-    "voltage_raw",
-    "seq",
-)
+def find_rtlsdr_device() -> bool:
+    """True if an RTL-SDR dongle is currently plugged in and openable."""
+    try:
+        sdr = RtlSdr()
+    except Exception:
+        return False
+    sdr.close()
+    return True
 
 
 @dataclass(frozen=True)
 class RadioStatus:
-    app_version: str
     frequency_hz: int
-    bfo: int
-    band: str
-    mode: str
-    step: str
-    bandwidth: str
-    agc_idx: int
-    volume: int
-    rssi: int
-    snr: int
-    voltage: float
+    band: str  # SW | AM | FM - coarse tag, also selects the demod mode
+    mode: str  # AM | FM | CW - demod actually in use
+    signal_db: int  # in-channel power above the nearby RF noise floor
+    noise_dbfs: int  # nearby RF noise floor, relative dBFS (diagnostic only)
+    volume: int  # software playback gain, 0-100
     seq: int
 
 
-def _parse_status_line(line: str) -> RadioStatus | None:
-    parts = line.strip().split(",")
-    if len(parts) != len(_STATUS_FIELDS):
-        return None
-    try:
-        fields = dict(zip(_STATUS_FIELDS, parts))
-        # frequency is reported in the band's native step unit: 10 kHz for
-        # FM (band "VHF"), 1 kHz for everything else (AM/MW/SW/SSB).
-        freq_unit_hz = 10_000 if fields["band"] == "VHF" else 1_000
-        return RadioStatus(
-            app_version=fields["app_version"],
-            frequency_hz=int(fields["frequency"]) * freq_unit_hz,
-            bfo=int(fields["bfo"]),
-            band=fields["band"],
-            mode=fields["mode"],
-            step=fields["step_idx"],
-            bandwidth=fields["bandwidth_idx"],
-            agc_idx=int(fields["agc_idx"]),
-            volume=int(fields["volume"]),
-            rssi=int(fields["rssi"]),
-            snr=int(fields["snr"]),
-            voltage=float(fields["voltage_raw"]),
-            seq=int(fields["seq"]),
+class _AudioBus:
+    """Ring buffer of demodulated audio, shared by every consumer (the CW
+    decoder's blocking captures, the signal/status readout, and any number of
+    live websocket listeners). Unlike the old hardware passthrough, none of
+    these need exclusive access - it's all just reads of the same stream."""
+
+    def __init__(self, rate: int = AUDIO_RATE, history_s: float = _AUDIO_HISTORY_S) -> None:
+        self._rate = rate
+        self._max_samples = int(history_s * rate)
+        self._chunks: deque[np.ndarray] = deque()
+        self._buffered_samples = 0
+        self._total_produced = 0
+        self._cond = threading.Condition()
+
+    def publish(self, chunk: np.ndarray) -> None:
+        with self._cond:
+            self._chunks.append(chunk)
+            self._buffered_samples += len(chunk)
+            self._total_produced += len(chunk)
+            while self._buffered_samples - len(self._chunks[0]) > self._max_samples:
+                self._buffered_samples -= len(self._chunks.popleft())
+            self._cond.notify_all()
+
+    def capture(self, seconds: float) -> np.ndarray:
+        """Block until `seconds` of audio produced after this call has
+        accumulated, then return it - a drop-in replacement for the old
+        sd.rec()-based blocking capture."""
+        n_needed = int(seconds * self._rate)
+        deadline = time.monotonic() + seconds + 5.0  # generous safety margin
+        with self._cond:
+            start_total = self._total_produced
+            while self._total_produced - start_total < n_needed:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not self._cond.wait(timeout=remaining):
+                    break
+            produced = self._total_produced - start_total
+            if produced <= 0:
+                return np.zeros(0, dtype=np.float32)
+            audio = np.concatenate(list(self._chunks))
+        n = min(produced, n_needed, len(audio))
+        return audio[-n:]
+
+
+def _trimmed_mean(values: np.ndarray, keep_fraction: float = 0.9) -> float:
+    """Mean without the strongest bins, which may contain adjacent stations."""
+    if values.size == 0:
+        return 1e-12
+    keep = max(1, int(values.size * keep_fraction))
+    return float(np.mean(np.partition(values, keep - 1)[:keep]))
+
+
+def _estimate_signal(iq: np.ndarray, channel_bw_hz: float) -> tuple[int, int]:
+    """Return in-channel power above local RF noise and the noise floor.
+
+    Absolute IQ power rises with gain, antenna noise, and interference, so it
+    cannot establish that a station is present. This periodogram compares the
+    tuned channel with nearby spectrum captured at the same instant. Removing
+    the IQ mean and a narrow centre notch prevents the RTL2832U DC spike from
+    being mistaken for a carrier.
+    """
+    if len(iq) < 32:
+        return 0, -120
+
+    centered = iq - np.mean(iq)
+    window = np.hanning(len(centered))
+    spectrum = np.fft.fftshift(np.fft.fft(centered * window))
+    power = np.abs(spectrum) ** 2 / max(float(np.sum(window**2)), 1.0)
+    frequencies = np.fft.fftshift(np.fft.fftfreq(len(centered), 1 / IQ_SAMPLE_RATE))
+
+    bin_hz = IQ_SAMPLE_RATE / len(centered)
+    dc_notch_hz = 3 * bin_hz
+    signal_mask = (np.abs(frequencies) <= channel_bw_hz / 2) & (
+        np.abs(frequencies) >= dc_notch_hz
+    )
+    noise_mask = (np.abs(frequencies) >= channel_bw_hz * 0.75) & (
+        np.abs(frequencies) <= IQ_SAMPLE_RATE * 0.45
+    )
+
+    signal_power = _trimmed_mean(power[signal_mask], keep_fraction=0.98)
+    noise_power = _trimmed_mean(power[noise_mask])
+    channel_excess_db = 10 * np.log10(signal_power / max(noise_power, 1e-12))
+    # AM/CW carriers occupy only a handful of bins and would be diluted by a
+    # channel-wide mean. Compare equal high percentiles as a second detector;
+    # noise produces similar tails in both regions, while a carrier does not.
+    signal_peak = float(np.percentile(power[signal_mask], 99.9))
+    noise_peak = float(np.percentile(power[noise_mask], 99.9))
+    carrier_excess_db = 10 * np.log10(signal_peak / max(noise_peak, 1e-12))
+    signal_db = int(round(np.clip(max(channel_excess_db, carrier_excess_db), 0, 60)))
+    noise_dbfs = int(round(10 * np.log10(max(noise_power, 1e-12))))
+    return signal_db, noise_dbfs
+
+
+def _decimate_lowpass(
+    x: np.ndarray, sos: np.ndarray, zi: np.ndarray | None
+) -> tuple[np.ndarray, np.ndarray]:
+    """Lowpass + decimate, carrying filter state (zi) across calls.
+
+    Without this, sosfilt() implicitly starts from zero state on every
+    call, which - since this runs once per ~34ms audio chunk - puts a
+    small discontinuity at every chunk boundary: audible as a persistent
+    low-level click/crackle laid over the real signal, worse on anything
+    already weak. Passing the previous call's final state (zf) back in as
+    the next call's zi makes the filter treat the stream as continuous.
+    """
+    if zi is None:
+        zi = sosfilt_zi(sos) * x[0]  # init as if already at rest at the first sample
+        if np.iscomplexobj(x):
+            zi = zi.astype(complex)
+    y, zf = sosfilt(sos, x, zi=zi)
+    return y[::_DECIMATION], zf
+
+
+def _demod_am(iq: np.ndarray, zi: np.ndarray | None) -> tuple[np.ndarray, np.ndarray]:
+    envelope = np.abs(iq)
+    envelope = envelope - np.mean(envelope)  # strip the DC/carrier component
+    decimated, zf = _decimate_lowpass(envelope, _AM_SOS, zi)
+    peak = float(np.max(np.abs(decimated))) + 1e-9
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "am demod: iq |mean|=%.6g iq_max=%.6g env_std=%.6g decimated_peak=%.6g",
+            float(np.mean(np.abs(iq))), float(np.max(np.abs(iq))),
+            float(np.std(envelope)), peak,
         )
-    except (ValueError, KeyError):
-        return None
+    # AM/SW go through direct sampling (see module docstring), which
+    # bypasses the R820T tuner - and its gain stage - entirely, so these
+    # signals arrive at the ADC dramatically weaker than FM's (which does
+    # get DEFAULT_GAIN_DB of real analog gain first). The floor here only
+    # exists to stop true silence from blowing up into full-volume hiss on
+    # division by a near-zero peak; it must stay well below any real
+    # direct-sampling signal's peak, or genuine weak signals get divided by
+    # the floor instead of their own peak and come out far too quiet to
+    # hear - which is exactly what was happening at 0.05.
+    return (decimated / max(peak, 0.001)).astype(np.float32), zf  # crude AGC
 
 
-class AtsMiniBridge:
-    """Owns the serial connection and the monitor-stream reader thread."""
+def _demod_fm(
+    iq: np.ndarray, prev_sample: complex | None, zi: np.ndarray | None
+) -> tuple[np.ndarray, complex, np.ndarray]:
+    iq_full = np.concatenate([[prev_sample], iq]) if prev_sample is not None else iq
+    # Polar discriminator: instantaneous frequency is the phase difference
+    # between consecutive samples.
+    demod = np.angle(iq_full[1:] * np.conj(iq_full[:-1]))
+    decimated, zf = _decimate_lowpass(demod, _FM_SOS, zi)
+    peak = float(np.max(np.abs(decimated))) + 1e-9
+    audio = (decimated / max(peak, 0.3)).astype(np.float32)
+    return audio, iq[-1], zf
 
-    def __init__(self, port: str, baud: int = BAUD_RATE) -> None:
-        self._serial = serial.Serial(port, baud, timeout=0.2)
-        self._lock = threading.Lock()
-        self._latest_status: RadioStatus | None = None
+
+def _demod_cw_tone(iq: np.ndarray, zi: np.ndarray | None) -> tuple[np.ndarray, np.ndarray]:
+    """tune_cw() physically tunes tone_hz off the carrier, so the keyed
+    carrier beats at exactly that offset in our own baseband - a lowpass
+    isolates it from everything else in the capture, and the real part is
+    an audible tone whenever the carrier is present. Fed straight into
+    cw_decoder.analyze() unchanged, same as it consumed the ATS Mini's own
+    BFO output before."""
+    decimated, zf = _decimate_lowpass(iq, _CW_SOS, zi)
+    audio = np.real(decimated)
+    peak = float(np.max(np.abs(audio))) + 1e-9
+    # Same direct-sampling gain gap as _demod_am() - see its comment.
+    return (audio / max(peak, 0.0005)).astype(np.float32), zf
+
+
+class RtlSdrBridge:
+    """Owns the RTL-SDR device and a background thread that continuously
+    reads IQ samples, demodulates them, updates status, and feeds both
+    blocking capture_audio() callers and any live websocket audio
+    subscribers from one shared stream."""
+
+    def __init__(self, device_index: int = 0) -> None:
+        self._sdr = RtlSdr(device_index)
+        self._sdr.sample_rate = IQ_SAMPLE_RATE
+        # Fixed gain, not "auto": hardware AGC actively normalizes IQ power
+        # to fill the ADC's dynamic range regardless of actual input signal
+        # strength, which also moves the measured noise floor. Fixed gain keeps
+        # noise-relative measurements comparable between tuning operations.
+        self._sdr.gain = DEFAULT_GAIN_DB
+        self._direct_sampling_active = False
+
+        self._state_lock = threading.Lock()
+        self._frequency_hz = 10_000_000
+        self._band = "SW"
+        self._mode = "AM"
+        self._volume = 70
+
         self._status_lock = threading.Lock()
+        self._latest_status: RadioStatus | None = None
+        self._seq = 0
+
+        self._audio_bus = _AudioBus()
+
+        self._subscribers_lock = threading.Lock()
+        self._subscribers: dict[int, tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = {}
+        self._next_subscriber_id = 0
+
         self._stop = threading.Event()
-        self._monitor_enabled = False
-        self._tune_generation = 0
-        self._settled_generation = 0
-        self._tune_lock = threading.Lock()
-        self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
-        self._reader_thread.start()
-        # Opening the port can toggle DTR/RTS and reset the ESP32-S3; give the
-        # firmware time to finish booting before sending any commands.
-        time.sleep(1.5)
-        self.enable_monitor()
+        self._retune = threading.Event()
+        self._worker = threading.Thread(target=self._run, daemon=True, name="rtlsdr-demod")
+        self._worker.start()
 
     def close(self) -> None:
         self._stop.set()
-        self._reader_thread.join(timeout=2)
-        if self._monitor_enabled:
-            self._send_raw(b"t")
-        self._serial.close()
+        self._worker.join(timeout=2)
+        self._sdr.close()
 
-    def _send_raw(self, data: bytes) -> None:
-        with self._lock:
-            self._serial.write(data)
+    # ---- tuning -------------------------------------------------------
 
-    def _is_streaming(self, window_s: float) -> bool:
-        with self._status_lock:
-            self._latest_status = None
-        time.sleep(window_s)
-        with self._status_lock:
-            return self._latest_status is not None
+    def _apply_frequency(self, frequency_hz: int) -> None:
+        needs_direct = frequency_hz < DIRECT_SAMPLING_THRESHOLD_HZ
+        if needs_direct != self._direct_sampling_active:
+            self._sdr.set_direct_sampling(DIRECT_SAMPLING_MODE if needs_direct else 0)
+            self._direct_sampling_active = needs_direct
+            logger.debug(
+                "direct sampling %s at %d Hz", "enabled" if needs_direct else "disabled", frequency_hz
+            )
+        self._sdr.center_freq = frequency_hz
 
-    def enable_monitor(self) -> None:
-        """'t' is a toggle, and the device's current state is unknown at
-        connect time, so probe for live CSV output before deciding whether
-        to send it."""
-        if self._is_streaming(1.5):
-            self._monitor_enabled = True
-            return
-        self._send_raw(b"t")
-        self._monitor_enabled = self._is_streaming(1.5)
-        if not self._monitor_enabled:
-            logger.warning("Could not confirm monitor stream is active")
+    def tune_to(self, frequency_hz: int, band: str) -> bool:
+        """Direct tune - no band search, unlike the firmware this replaced."""
+        band = band.upper()
+        mode = "FM" if band == "FM" else "AM"
+        with self._state_lock:
+            self._frequency_hz = frequency_hz
+            self._band = band if band in ("SW", "AM", "FM") else "SW"
+            self._mode = mode
+        self._retune.set()
+        logger.debug("tune_to: %d Hz band=%s mode=%s", frequency_hz, self._band, mode)
+        return True
 
-    def _read_loop(self) -> None:
-        buf = b""
-        while not self._stop.is_set():
-            with self._lock:
-                chunk = self._serial.read(1024)
-            if not chunk:
-                time.sleep(0.02)
-                continue
-            buf += chunk
-            while b"\r\n" in buf:
-                line, buf = buf.split(b"\r\n", 1)
-                status = _parse_status_line(line.decode(errors="ignore"))
-                if status is not None:
-                    with self._status_lock:
-                        self._latest_status = status
+    def tune_cw(
+        self, carrier_hz: int, band_label: str = "", mode: str = "USB", tone_hz: int = 700
+    ) -> bool:
+        """Tune tone_hz off the carrier so a keyed CW signal beats at an
+        audible pitch - the RF-vs-image sideband distinction USB/LSB
+        implies on a real receiver doesn't apply here, since we choose
+        which side of the carrier to sit on ourselves rather than relying
+        on hardware sideband selection."""
+        offset = tone_hz if mode.upper() != "LSB" else -tone_hz
+        with self._state_lock:
+            self._frequency_hz = carrier_hz + offset
+            self._band = "SW"
+            self._mode = "CW"
+        self._retune.set()
+        logger.debug(
+            "tune_cw: carrier=%d Hz offset=%+d -> %d Hz (%s)",
+            carrier_hz, offset, carrier_hz + offset, band_label,
+        )
+        return True
+
+    def set_mode(self, mode: str) -> bool:
+        with self._state_lock:
+            self._mode = mode.upper()
+        return True
+
+    def volume_up(self) -> None:
+        with self._state_lock:
+            self._volume = min(100, self._volume + 5)
+
+    def volume_down(self) -> None:
+        with self._state_lock:
+            self._volume = max(0, self._volume - 5)
+
+    def is_tuning(self) -> bool:
+        """Always False: a direct RTL-SDR retune is effectively instant, so
+        there's no multi-second band-search state to report."""
+        return False
 
     def latest_status(self) -> RadioStatus | None:
         with self._status_lock:
             return self._latest_status
 
-    def is_tuning(self) -> bool:
-        """True while a tune_to() band search is in flight. A single click
-        can take several seconds when it must cycle through many
-        intermediate bands (no direct 'select band N' command exists), and
-        every hop briefly shows up in the status stream; callers use this to
-        suppress that transient noise instead of visibly bouncing around."""
-        return self._tune_generation != self._settled_generation
+    # ---- audio ----------------------------------------------------------
 
-    def tune_hz(self, frequency_hz: int) -> None:
-        """Tune directly to a frequency in Hz (F<hz>\\r command). The
-        firmware's remoteSetFrequency() requires a trailing '\\r' to
-        recognize the end of the digit sequence, and only accepts values
-        within the currently selected firmware band's range."""
-        self._send_raw(f"F{frequency_hz}\r".encode())
+    def capture_audio(self, seconds: float) -> np.ndarray:
+        return self._audio_bus.capture(seconds)
 
-    def _press_band(
-        self, direction: bytes, count: int, firmware_band: str, generation: int | None
-    ) -> bool | None:
-        """Press B/b `count` times, stopping early on a match.
+    def subscribe_audio(
+        self, loop: asyncio.AbstractEventLoop
+    ) -> tuple[int, asyncio.Queue]:
+        queue: asyncio.Queue = asyncio.Queue(maxsize=50)
+        with self._subscribers_lock:
+            subscriber_id = self._next_subscriber_id
+            self._next_subscriber_id += 1
+            self._subscribers[subscriber_id] = (loop, queue)
+        return subscriber_id, queue
 
-        Returns True if found, None if preempted by a newer tune_to() call,
-        False if it pressed `count` times without finding the target (the
-        band pointer has moved `count` steps in `direction` at that point).
-        """
-        status = self.latest_status()
-        for _ in range(count):
-            if generation is not None and generation != self._tune_generation:
-                return None
-            prev_band = status.band if status is not None else None
-            self._send_raw(direction)
-            deadline = time.time() + 1.5
-            status = self.latest_status()
-            while time.time() < deadline and (status is None or status.band == prev_band):
-                time.sleep(0.05)
-                status = self.latest_status()
-            if status is not None and status.band == firmware_band:
-                return True
-        return False
+    def unsubscribe_audio(self, subscriber_id: int) -> None:
+        with self._subscribers_lock:
+            self._subscribers.pop(subscriber_id, None)
 
-    def select_band(
-        self, firmware_band: str, max_presses: int = 30, generation: int | None = None
-    ) -> bool:
-        """Move the band pointer to firmware_band, or give up.
+    def _publish_to_subscribers(self, pcm_bytes: bytes) -> None:
+        with self._subscribers_lock:
+            subs = list(self._subscribers.items())
+        for subscriber_id, (loop, queue) in subs:
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, pcm_bytes)
+            except RuntimeError:
+                pass  # event loop closed; disconnect handler will clean up
 
-        The firmware only exposes relative "next band" (B) / "previous band"
-        (b) commands across a fixed 19-band cycle (..., CB, VHF, ALL, 11M,
-        ...) — there's no direct "select band N", so every press is visible
-        on the device's own screen. VHF sits immediately *before* ALL going
-        forward, which means it's only one step *backward* from ALL or any
-        of the SW meter bands — the common SW<->FM jump resolves in ~1 press
-        backward instead of up to ~18 forward. That asymmetry only helps
-        when VHF is the target (going the other way, forward from VHF
-        reaches ALL in 1 step already), so the reverse probe is restricted
-        to that case; every other target uses the plain forward sweep,
-        which was already the shorter direction for them.
+    # ---- worker loop ------------------------------------------------------
 
-        A fixed inter-press delay is unreliable (settle time after a press
-        varies), so each press waits for the reported band to actually
-        change (not just for a new CSV line, since the monitor stream ticks
-        ~10x/sec regardless of band changes) before sending the next one.
+    def _run(self) -> None:
+        with self._state_lock:
+            freq, band, mode = self._frequency_hz, self._band, self._mode
+        self._apply_frequency(freq)
+        prev_fm_sample: complex | None = None
+        filter_zi: np.ndarray | None = None
+        signal_history: deque[tuple[int, int]] = deque(maxlen=12)
 
-        If `generation` is given and a newer tune_to() call supersedes it
-        mid-cycle (see tune_to), this aborts immediately instead of
-        finishing a now-irrelevant multi-second band search.
-        """
-        status = self.latest_status()
-        if status is not None and status.band == firmware_band:
-            return True
+        while not self._stop.is_set():
+            # The whole iteration is one try/except: this thread has no
+            # external supervisor, so an uncaught exception anywhere in here
+            # (a bad retune, a transient read glitch, a DSP edge case) would
+            # otherwise silently and permanently kill the radio until the
+            # container restarts - log it and keep going instead.
+            try:
+                if self._retune.is_set():
+                    with self._state_lock:
+                        freq, band, mode = self._frequency_hz, self._band, self._mode
+                    self._apply_frequency(freq)
+                    prev_fm_sample = None
+                    filter_zi = None  # a new frequency isn't a continuation of the old stream
+                    signal_history.clear()
+                    self._retune.clear()
 
-        if firmware_band != "VHF":
-            found = self._press_band(b"B", max_presses, firmware_band, generation)
-            return bool(found)
+                iq = self._sdr.read_samples(CHUNK_IQ_SAMPLES)
 
-        probe_budget = min(8, max_presses)
-        found = self._press_band(b"b", probe_budget, firmware_band, generation)
-        if found is None:
-            return False
-        if found:
-            return True
-        # Reverse probe missed: undo it so the forward sweep below covers
-        # the full cycle instead of double-counting the backward detour.
-        undone = self._press_band(b"B", probe_budget, "", generation)
-        if undone is None:
-            return False
+                if mode == "FM":
+                    audio, prev_fm_sample, filter_zi = _demod_fm(iq, prev_fm_sample, filter_zi)
+                    metrics = _estimate_signal(iq, FM_CHANNEL_BW_HZ)
+                elif mode == "CW":
+                    audio, filter_zi = _demod_cw_tone(iq, filter_zi)
+                    metrics = _estimate_signal(iq, CW_CHANNEL_BW_HZ)
+                else:
+                    audio, filter_zi = _demod_am(iq, filter_zi)
+                    metrics = _estimate_signal(iq, AM_CHANNEL_BW_HZ)
 
-        remaining = max_presses - 2 * probe_budget
-        found = self._press_band(b"B", max(remaining, 0), firmware_band, generation)
-        return bool(found)
+                signal_history.append(metrics)
+                signal_db = int(round(float(np.median([item[0] for item in signal_history]))))
+                noise_dbfs = int(round(float(np.median([item[1] for item in signal_history]))))
 
-    def tune_to(self, frequency_hz: int, coarse_band: str) -> bool:
-        """Select the firmware band matching a coarse SW/AM/FM tag, then tune.
+                with self._state_lock:
+                    volume = self._volume
+                audio = np.clip(audio * (volume / 100.0), -1.0, 1.0)
 
-        Both SW and AM broadcasts are tuned via the firmware's 'ALL' band:
-        confirmed by direct test that it spans the entire range continuously
-        from 530 kHz (bottom of AM broadcast) through the whole shortwave
-        spectrum, not just the shortwave portion its name implies. Routing
-        AM through it too (instead of switching to MW1) means SW<->AM clicks
-        never need a band search at all, only SW/AM<->FM does.
+                self._audio_bus.publish(audio)
+                self._publish_to_subscribers((audio * 32767).astype(np.int16).tobytes())
 
-        Each call bumps a generation counter; if another tune_to() call
-        starts before this one finishes its (multi-second) band search, this
-        one aborts rather than completing a stale tune. Returns False if
-        preempted or the band couldn't be found, True if the F<hz> command
-        was actually sent.
-        """
-        with self._tune_lock:
-            self._tune_generation += 1
-            my_generation = self._tune_generation
-
-        try:
-            firmware_band = {"FM": "VHF", "SW": "ALL", "AM": "ALL"}.get(coarse_band.upper())
-            if firmware_band and not self.select_band(firmware_band, generation=my_generation):
-                return False
-            if my_generation != self._tune_generation:
-                return False
-            self.tune_hz(frequency_hz)
-            return True
-        finally:
-            # Only the most recent call gets to declare "settled"; a
-            # preempted older call must not mask that a newer one is
-            # still (or now) in flight.
-            if my_generation == self._tune_generation:
-                self._settled_generation = my_generation
-
-    def tune_cw(
-        self, carrier_hz: int, firmware_band: str, mode: str = "USB", tone_hz: int = 700
-    ) -> bool:
-        """Tune to a CW signal's carrier frequency with an audible beat tone.
-
-        CW is an on/off-keyed carrier with no modulation of its own; AM mode
-        (the coarse "SW" path) has no BFO and would only produce faint
-        clicks, not a clean tone. This selects the given ham band (e.g.
-        "20M"), switches to USB/LSB, and tunes `tone_hz` above the carrier
-        (docs: in SSB modes, F<hz>'s sub-kHz digits set the BFO directly),
-        so the demodulated audio is a steady `tone_hz` note while keyed.
-        """
-        with self._tune_lock:
-            self._tune_generation += 1
-            my_generation = self._tune_generation
-
-        try:
-            if not self.select_band(firmware_band, generation=my_generation):
-                return False
-            if my_generation != self._tune_generation:
-                return False
-            self.set_mode(mode)
-            if my_generation != self._tune_generation:
-                return False
-            self.tune_hz(carrier_hz + tone_hz)
-            return True
-        finally:
-            if my_generation == self._tune_generation:
-                self._settled_generation = my_generation
-
-    def set_mode(self, mode: str, max_presses: int = 8) -> bool:
-        """Cycle mode (M/m) until it matches; firmware has no direct 'set
-        mode' command. Same fixed-delay bug band-selection originally had:
-        a flat sleep after each press can miss the actual change and either
-        double-press or read stale state, so this waits for the reported
-        mode to actually change before sending the next press."""
-        target = mode.upper()
-        status = self.latest_status()
-        if status is not None and status.mode.upper() == target:
-            return True
-        for _ in range(max_presses):
-            prev_mode = status.mode if status is not None else None
-            self._send_raw(b"M")
-            deadline = time.time() + 1.5
-            status = self.latest_status()
-            while time.time() < deadline and (status is None or status.mode == prev_mode):
-                time.sleep(0.05)
-                status = self.latest_status()
-            if status is not None and status.mode.upper() == target:
-                return True
-        return False
-
-    def volume_up(self) -> None:
-        self._send_raw(b"V")
-
-    def volume_down(self) -> None:
-        self._send_raw(b"v")
+                with self._status_lock:
+                    self._seq += 1
+                    self._latest_status = RadioStatus(
+                        frequency_hz=freq,
+                        band=band,
+                        mode=mode,
+                        signal_db=signal_db,
+                        noise_dbfs=noise_dbfs,
+                        volume=volume,
+                        seq=self._seq,
+                    )
+            except Exception:
+                logger.exception("RTL-SDR worker iteration failed")
+                time.sleep(0.1)

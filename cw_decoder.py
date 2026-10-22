@@ -1,4 +1,5 @@
-"""Capture audio from a USB sound card and decode Morse/CW from it.
+"""Capture audio from the RTL-SDR bridge's demodulated stream and decode
+Morse/CW from it.
 
 Pipeline: record -> find the CW tone frequency (unknown in advance, depends
 on receiver BFO offset) -> extract its on/off envelope -> convert envelope
@@ -18,8 +19,9 @@ import logging
 from dataclasses import dataclass
 
 import numpy as np
-import sounddevice as sd
 from scipy.signal import butter, hilbert, sosfiltfilt
+
+from radio_bridge import RtlSdrBridge
 
 logger = logging.getLogger(__name__)
 
@@ -88,12 +90,8 @@ class CwResult:
     confidence: float  # 0-1, combines timing regularity and decoded-symbol quality
 
 
-def record_audio(device: int, seconds: float, samplerate: int = 48000) -> np.ndarray:
-    audio = sd.rec(
-        int(seconds * samplerate), samplerate=samplerate, channels=1, device=device
-    )
-    sd.wait()
-    return audio[:, 0]
+def record_audio(bridge: RtlSdrBridge, seconds: float) -> np.ndarray:
+    return bridge.capture_audio(seconds)
 
 
 def _find_tone_hz(audio: np.ndarray, samplerate: int) -> tuple[float, float] | None:
@@ -233,6 +231,6 @@ def analyze(audio: np.ndarray, samplerate: int) -> CwResult:
     return CwResult(is_cw, tone_hz, morse, text, wpm, confidence)
 
 
-def listen(device: int, seconds: float = 4.0, samplerate: int = 48000) -> CwResult:
-    audio = record_audio(device, seconds, samplerate)
+def listen(bridge: RtlSdrBridge, seconds: float = 4.0, samplerate: int = 48000) -> CwResult:
+    audio = record_audio(bridge, seconds)
     return analyze(audio, samplerate)

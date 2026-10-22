@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Starts the ATS Mini controller. Run this instead of invoking uvicorn
-# directly: it clears a stale process holding the serial port first, which
-# otherwise fails silently with "device reports readiness to read but
-# returned no data" or an empty /api/status.
+# Starts the RTL-SDR station browser for local development. The intended
+# deployment path is Docker (see compose.yaml); this script is for running
+# it directly on a host that already has the RTL-SDR driver stack set up
+# (librtlsdr installed, kernel DVB drivers blacklisted - see README).
 #
 # Author: James Sawyer / JSLabs - https://www.jamessawyer.co.uk/ | https://labs.jamessawyer.co.uk/
 set -euo pipefail
@@ -11,21 +11,10 @@ cd "$(dirname "$0")"
 HOST="127.0.0.1"
 HTTP_PORT="8731"
 
-# Kill any previous instance of this app, by process pattern rather than by
-# which serial port it's holding: the ATS Mini's /dev/cu.usbmodemNNNN path
-# changes across reconnects (the app now auto-detects it by USB vendor ID
-# instead of a fixed path), so that's not a reliable thing to check here.
-stale_pids="$(pgrep -f "uvicorn app:app.*--port $HTTP_PORT" || true)"
-if [ -n "$stale_pids" ]; then
-    echo "Killing stale server (pid $(echo $stale_pids | tr '\n' ' '))"
-    kill -9 $stale_pids
-    sleep 1.5
+if ! python3 -c "from rtlsdr import RtlSdr; RtlSdr().close()" >/dev/null 2>&1; then
+    echo "Warning: no RTL-SDR dongle detected (or driver permissions aren't set up - see README). Starting anyway; tuning will fail until it's connected." >&2
 fi
 
-if ! ls /dev/cu.usbmodem* >/dev/null 2>&1; then
-    echo "Warning: no USB serial device found. Is the ATS Mini plugged in? Starting anyway; tuning will fail until it's connected." >&2
-fi
-
-echo "Starting ATS Mini controller at http://$HOST:$HTTP_PORT"
+echo "Starting RTL-SDR station browser at http://$HOST:$HTTP_PORT"
 ( sleep 2 && open "http://$HOST:$HTTP_PORT" ) &
 exec python3 -m uvicorn app:app --host "$HOST" --port "$HTTP_PORT"

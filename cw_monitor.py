@@ -23,10 +23,9 @@ import time
 from dataclasses import dataclass, field
 
 import numpy as np
-import sounddevice as sd
 
 import cw_decoder
-from radio_bridge import AtsMiniBridge
+from radio_bridge import RtlSdrBridge
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +42,7 @@ SAMPLERATE = 48000
 @dataclass
 class CwTarget:
     freq_hz: int
-    firmware_band: str
+    band_label: str
     mode: str = "USB"
 
 
@@ -71,17 +70,15 @@ class MonitorState:
 class CwMonitor:
     def __init__(
         self,
-        bridge: AtsMiniBridge,
-        audio_device: int,
+        bridge: RtlSdrBridge,
         candidates: list[CwTarget],
         manual_override: threading.Event,
     ):
         self._bridge = bridge
-        self._device = audio_device
         self._candidates = candidates
         # Same signal /api/tune sets: a manual click should always win over
         # any background automation (this monitor's continuous tuning, or
-        # the RSSI scan), not just get raced against it.
+        # the signal scan), not just get raced against it.
         self._manual_override = manual_override
         self._state = MonitorState()
         self._state_lock = threading.Lock()
@@ -133,14 +130,7 @@ class CwMonitor:
         )
 
     def _record_chunk(self) -> np.ndarray:
-        audio = sd.rec(
-            int(CHUNK_S * SAMPLERATE),
-            samplerate=SAMPLERATE,
-            channels=1,
-            device=self._device,
-        )
-        sd.wait()
-        return audio[:, 0]
+        return self._bridge.capture_audio(CHUNK_S)
 
     def _finalize(
         self, freq_hz: int, started_at: float, result: cw_decoder.CwResult
@@ -170,7 +160,7 @@ class CwMonitor:
                 self._update(mode="scanning", current_freq_hz=target.freq_hz)
 
                 if not self._bridge.tune_cw(
-                    target.freq_hz, target.firmware_band, target.mode
+                    target.freq_hz, target.band_label, target.mode
                 ):
                     time.sleep(0.5)
                     continue
@@ -178,14 +168,7 @@ class CwMonitor:
                 if self._should_stop():
                     break
 
-                probe_audio = sd.rec(
-                    int(PROBE_S * SAMPLERATE),
-                    samplerate=SAMPLERATE,
-                    channels=1,
-                    device=self._device,
-                )
-                sd.wait()
-                probe_audio = probe_audio[:, 0]
+                probe_audio = self._bridge.capture_audio(PROBE_S)
                 probe_result = cw_decoder.analyze(probe_audio, SAMPLERATE)
                 if not probe_result.is_cw:
                     continue  # nothing CW-shaped here, move to the next candidate
