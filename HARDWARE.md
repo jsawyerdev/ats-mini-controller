@@ -88,6 +88,11 @@ This deliberately classifies uncertain results as unverified. It does not attemp
 identification and cannot reject every intermittent interferer, digital signal, or structured
 spur. Listening and station identification remain necessary for attribution.
 
+The UI also reports the complementary `28.8 MHz - f` image for every direct-sampled channel.
+This is disclosure, not image cancellation. The waterfall and bounded SigMF IQ recorder expose
+enough evidence for offline comparison without creating a second USB reader or bypassing the
+single-owner radio worker.
+
 ## Hardware isolation plan
 
 Run these checks in order because each separates competing causes:

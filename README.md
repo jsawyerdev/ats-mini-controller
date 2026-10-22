@@ -17,6 +17,7 @@ Author: **James Sawyer / JSLabs** — [jamessawyer.co.uk](https://www.jamessawye
 - **Signal scanning**: checks all 2,312 unique catalogue frequencies, compares each channel with its nearby RF noise floor, then analyses RF candidates for structured audio so amplified hiss is not presented as useful listening. Results and last-checked times persist across restarts.
 - **CW (Morse code) monitor**: cycles known CW-heavy frequencies (propagation beacons, ham calling frequencies), locks onto whichever one has real keying, and decodes it live in the browser — timestamped, frequency-tagged, scrolling — until the signal stops or fades below detection.
 - **Live audio**: streams the demodulated audio to your browser over WebSocket and plays it via the Web Audio API — no physical audio cable needed, and it works from any machine on the network, not just whatever's plugged into the radio.
+- **Receiver diagnostics**: displays a live bounded-bandwidth waterfall, warns about direct-sampling mirror frequencies, records short SigMF IQ captures, controls FM tuner gain, and provides operator-approved frequency calibration.
 
 ## Hardware required
 
@@ -116,6 +117,8 @@ analysis is shown as its own phase. The scan button
 becomes a stop control while running. At the default 0.7-second settling time, a complete sweep
 took about 27 minutes on the deployed Raspberry Pi before audio classification; each RF candidate
 now adds a 1.5-second content capture, so the total depends on how many channels pass the RF gate.
+Borderline audio is automatically extended by another three seconds; clearly flat noise and
+clearly structured audio keep the fast path.
 
 Tuning a station while scanning asks before it stops the sweep. A scan and uninterrupted listening
 cannot run simultaneously on one dongle: scanning necessarily retunes the same RF front end. A
@@ -132,6 +135,22 @@ A manual tune from the Stations tab always interrupts a running scan or CW hunt 
 ### Live audio
 
 The **Audio** toggle in the meter bar opens a WebSocket to the server and streams the currently-demodulated audio to your browser, playing it via the Web Audio API. Because this is a network stream rather than a local hardware passthrough, it works from any device on the network, doesn't need exclusive access to anything, and can run alongside the CW monitor without contention - both just read the same underlying demodulated stream.
+
+### Receiver controls and diagnostics
+
+The live waterfall is a 512-bin display product generated from the existing IQ stream; the
+browser never receives raw unbounded samples. FM tuner gain is selectable from verified R820T
+gain steps. Direct-sampled AM/SW bypasses that tuner, so the UI explicitly reports that the gain
+setting is inactive there.
+
+**Estimate calibration** measures a user-supplied exact reference carrier 100 kHz away from the
+receiver centre, proposes a bounded oscillator correction, and requires confirmation before
+applying it. It does not choose a reference or silently recalibrate from catalogue labels.
+
+**Record IQ** writes a five-second, 8-bit complex SigMF capture and metadata into
+`data/recordings`. Requests are limited to 1–10 seconds, concurrent recordings are rejected,
+retuning aborts the recording, and total recording storage is capped at 512 MiB. Files are not
+served over the unauthenticated web interface; retrieve them from the Pi filesystem.
 
 ## Known limitations
 
@@ -151,6 +170,24 @@ The **Audio** toggle in the meter bar opens a WebSocket to the server and stream
 ## Changelog
 
 ### Unreleased
+
+### 2.8.0 - 2026-10-22
+
+#### Added
+
+- Added a live 512-bin waterfall derived from the receiver worker without exposing raw IQ to the
+  browser.
+- Added selectable fixed FM tuner gain and operator-approved PPM calibration against an exact
+  known carrier.
+- Added bounded 1–10 second SigMF IQ recording with a 512 MiB storage quota and retune safety.
+- Added explicit direct-sampling mirror frequencies and paired measurement strength in station
+  results.
+
+#### Changed
+
+- Replaced per-chunk AM peak normalisation with stateful attack/release AGC.
+- Borderline content measurements extend from 1.5 to 4.5 seconds while clear decisions retain the
+  shorter scan path.
 
 ### 2.7.0 - 2026-10-22
 

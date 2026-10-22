@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import sqlite3
+import stat
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -19,6 +20,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
 from fastapi import FastAPI, HTTPException, Query, Request, Response, WebSocket
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -29,7 +31,10 @@ from cw_monitor import CwMonitor
 from cw_monitor import CwTarget as MonitorCwTarget
 from radio_bridge import (
     AM_AUDIO_BW_HZ,
+    DIRECT_SAMPLING_THRESHOLD_HZ,
     FM_AUDIO_BW_HZ,
+    IQ_SAMPLE_RATE,
+    SUPPORTED_GAIN_DB,
     RtlSdrBridge,
     audio_content_db,
     find_rtlsdr_device,
@@ -53,13 +58,16 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "data" / "stations.db"
 SIGNAL_DB_PATH = Path(__file__).parent / "data" / "signal_cache.db"
-APP_VERSION = "2.7.0"
+RECORDINGS_PATH = Path(__file__).parent / "data" / "recordings"
+APP_VERSION = "2.8.0"
 
 MIN_VIABLE_FM_SIGNAL_DB = 6
 MIN_VIABLE_DIRECT_SIGNAL_DB = 10
 MIN_AUDIBLE_DBFS = -50
 AUDIO_CONTENT_THRESHOLD_DB = 3
 CONTENT_CAPTURE_S = 1.5
+CONTENT_EXTENDED_CAPTURE_S = 3.0
+IQ_RECORDING_QUOTA_BYTES = 512 * 1024 * 1024
 
 COUNTRY_NAMES = {"CA": "Canada", "GB": "United Kingdom", "US": "United States"}
 
@@ -92,6 +100,12 @@ def _viable_sql() -> str:
 
 def _country_sql(alias: str = "s") -> str:
     return f"CASE WHEN {alias}.source LIKE 'ofcom_%' THEN 'GB' ELSE {alias}.country END"
+
+
+def _mirror_frequency(freq_hz: int) -> int | None:
+    if freq_hz >= DIRECT_SAMPLING_THRESHOLD_HZ:
+        return None
+    return DIRECT_SAMPLING_THRESHOLD_HZ - freq_hz
 
 
 def _station_where(q: str, band: str, country: str) -> tuple[str, list[object]]:
@@ -316,6 +330,14 @@ def list_stations(
         d = dict(r)
         if d["source"].startswith("ofcom_"):
             d["country"] = "GB"
+        mirror_freq_hz = _mirror_frequency(d["freq_hz"])
+        if mirror_freq_hz is not None:
+            d["mirror_freq_hz"] = mirror_freq_hz
+            mirror = signal_cache.get(mirror_freq_hz)
+            d["mirror_signal_db"] = mirror["signal_db"] if mirror else None
+        else:
+            d["mirror_freq_hz"] = None
+            d["mirror_signal_db"] = None
         out.append(d)
     return {"total": total, "offset": offset, "returned": len(out), "stations": out}
 
@@ -356,6 +378,149 @@ def tune(req: TuneRequest) -> dict:
     landed = radio.tune_to(req.frequency_hz, req.band)
     logger.debug("tune: %d Hz band=%s ok=%s", req.frequency_hz, req.band, landed)
     return {"ok": landed}
+
+
+class GainRequest(BaseModel):
+    gain_db: float
+
+
+@app.post("/api/radio/gain")
+def set_gain(req: GainRequest) -> dict:
+    radio = _require_bridge()
+    if req.gain_db not in SUPPORTED_GAIN_DB:
+        raise HTTPException(
+            status_code=422,
+            detail=f"gain_db must be one of {', '.join(map(str, SUPPORTED_GAIN_DB))}",
+        )
+    radio.set_gain(req.gain_db)
+    return {"ok": True, "gain_db": req.gain_db}
+
+
+class PpmRequest(BaseModel):
+    ppm: int = Field(ge=-200, le=200)
+
+
+@app.post("/api/radio/ppm")
+def set_ppm(req: PpmRequest) -> dict:
+    radio = _require_bridge()
+    radio.set_frequency_correction(req.ppm)
+    return {"ok": True, "ppm": req.ppm}
+
+
+class CalibrationRequest(BaseModel):
+    reference_hz: int = Field(ge=MIN_FREQUENCY_HZ, le=MAX_FREQUENCY_HZ)
+    band: Literal["SW", "AM", "FM"]
+    settle_s: float = Field(default=1.5, ge=0.5, le=5.0)
+
+
+@app.post("/api/radio/calibrate")
+def calibrate(req: CalibrationRequest) -> dict:
+    radio = _require_bridge()
+    offset_hz = 100_000
+    centre_hz = req.reference_hz - offset_hz
+    if centre_hz < MIN_FREQUENCY_HZ:
+        raise HTTPException(status_code=422, detail="reference frequency is too low")
+    scan_cancel.set()
+    radio.tune_to(centre_hz, req.band)
+    time.sleep(req.settle_s)
+    try:
+        status = radio.latest_status()
+        if status is None or status.frequency_hz != centre_hz:
+            raise HTTPException(
+                status_code=503, detail="radio did not settle on the reference"
+            )
+        measured_offset_hz = radio.estimate_reference(offset_hz)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        radio.tune_to(req.reference_hz, req.band)
+    error_hz = measured_offset_hz - offset_hz
+    current_ppm = status.ppm
+    proposed_ppm = round(current_ppm - error_hz * 1_000_000 / req.reference_hz)
+    return {
+        "reference_hz": req.reference_hz,
+        "measured_hz": round(centre_hz + measured_offset_hz),
+        "error_hz": round(error_hz),
+        "current_ppm": current_ppm,
+        "proposed_ppm": max(-200, min(200, proposed_ppm)),
+        "applied": False,
+    }
+
+
+@app.get("/api/spectrum")
+def spectrum() -> dict:
+    radio = _require_bridge()
+    status = radio.latest_status()
+    return {
+        "frequency_hz": status.frequency_hz if status else None,
+        "span_hz": IQ_SAMPLE_RATE,
+        "power_dbfs": radio.spectrum(),
+    }
+
+
+class IqRecordingRequest(BaseModel):
+    seconds: float = Field(default=5.0, ge=1.0, le=10.0)
+
+
+@app.post("/api/iq/record")
+def record_iq(req: IqRecordingRequest) -> dict:
+    radio = _require_bridge()
+    status = radio.latest_status()
+    if status is None:
+        raise HTTPException(status_code=503, detail="radio has no current status")
+    RECORDINGS_PATH.mkdir(parents=True, exist_ok=True)
+    used_bytes = 0
+    with os.scandir(RECORDINGS_PATH) as entries:
+        for entry in entries:
+            file_stat = entry.stat(follow_symlinks=False)
+            if stat.S_ISREG(file_stat.st_mode):
+                used_bytes += file_stat.st_size
+    expected_bytes = round(req.seconds * IQ_SAMPLE_RATE * 2)
+    if used_bytes + expected_bytes > IQ_RECORDING_QUOTA_BYTES:
+        raise HTTPException(status_code=507, detail="IQ recording quota exceeded")
+    stem = f"{time.time_ns()}-{status.frequency_hz}Hz"
+    data_path = RECORDINGS_PATH / f"{stem}.sigmf-data"
+    meta_path = RECORDINGS_PATH / f"{stem}.sigmf-meta"
+    output = data_path.open("xb")
+    try:
+        samples = radio.record_iq(output, req.seconds)
+        finished_status = radio.latest_status()
+        if (
+            finished_status is None
+            or finished_status.frequency_hz != status.frequency_hz
+        ):
+            raise RuntimeError("radio retuned during IQ recording")
+        metadata = {
+            "global": {
+                "core:datatype": "ci8",
+                "core:sample_rate": IQ_SAMPLE_RATE,
+                "core:version": "1.2.0",
+                "recorder": f"ats-mini-controller {APP_VERSION}",
+            },
+            "captures": [
+                {
+                    "core:sample_start": 0,
+                    "core:frequency": status.frequency_hz,
+                    "gain_db": status.gain_db,
+                    "ppm": status.ppm,
+                    "direct_sampling": status.direct_sampling,
+                }
+            ],
+            "annotations": [],
+        }
+        meta_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    except (OSError, RuntimeError, TimeoutError) as exc:
+        if not output.closed:
+            output.close()
+        data_path.unlink(missing_ok=True)
+        meta_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        "samples": samples,
+        "seconds": samples / IQ_SAMPLE_RATE,
+        "data_file": data_path.name,
+        "metadata_file": meta_path.name,
+    }
 
 
 @app.post("/api/volume/{direction}")
@@ -486,6 +651,26 @@ def scan(req: ScanRequest) -> dict:
                 captured_audio,
                 FM_AUDIO_BW_HZ if target.band == "FM" else AM_AUDIO_BW_HZ,
             )
+            if 1 <= content_db <= 4:
+                extra_audio = radio.capture_audio(CONTENT_EXTENDED_CAPTURE_S)
+                if scan_cancel.is_set():
+                    logger.info("scan: cancelled during extended audio analysis")
+                    break
+                current = radio.latest_status()
+                if current is None or current.frequency_hz != target.freq_hz:
+                    skipped_mismatch += 1
+                    logger.debug(
+                        "scan: skipped %d Hz - retuned during extended audio analysis",
+                        target.freq_hz,
+                    )
+                    processed_count += 1
+                    with scan_progress_lock:
+                        scan_progress["processed"] = processed_count
+                    continue
+                content_db = audio_content_db(
+                    np.concatenate((captured_audio, extra_audio)),
+                    FM_AUDIO_BW_HZ if target.band == "FM" else AM_AUDIO_BW_HZ,
+                )
         entry = {
             "signal_db": st.signal_db,
             "noise_dbfs": st.noise_dbfs,

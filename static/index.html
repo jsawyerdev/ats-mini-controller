@@ -81,6 +81,9 @@
   #meter .stat .label { font-size: 10px; letter-spacing: 0.08em; color: var(--text-dim); text-transform: uppercase; }
   #meter .stat .value { font-size: 20px; color: var(--amber); text-shadow: 0 0 8px rgba(255,179,71,0.5); font-variant-numeric: tabular-nums; }
   #meter #m-freq { color: var(--orange); font-size: 24px; text-shadow: 0 0 10px rgba(255,138,30,0.6); }
+  #receiver-tools { display:flex; gap:12px; align-items:center; flex-wrap:wrap; padding:10px 18px; background:var(--navy); border-bottom:1px solid var(--navy-lt); }
+  #receiver-tools label, #receiver-state { color:var(--text-dim); font-size:12px; }
+  #waterfall { width:100%; height:120px; display:block; background:#020711; border-bottom:1px solid var(--navy-lt); }
 
   table { width: 100%; border-collapse: collapse; }
   thead th {
@@ -192,6 +195,19 @@
   <div class="stat"><span class="label">Link</span><span class="value"><span id="m-link" class="dot off"></span><span id="m-link-txt">-</span></span></div>
   <div class="stat"><span class="label">Audio</span><button id="audio-toggle" class="vol-btn" style="padding:4px 10px;">Off</button></div>
 </div>
+<div id="receiver-tools">
+  <label>FM tuner gain
+    <select id="gain-select">
+      <option value="19.7">Low · 19.7 dB</option><option value="28">Medium · 28.0 dB</option>
+      <option value="36.4">High · 36.4 dB</option><option value="40.2" selected>Default · 40.2 dB</option>
+      <option value="49.6">Maximum · 49.6 dB</option>
+    </select>
+  </label>
+  <button id="calibrate-btn">Estimate calibration</button>
+  <button id="record-iq-btn">Record IQ · 5s</button>
+  <span id="receiver-state">0 ppm · tuner path</span>
+</div>
+<canvas id="waterfall" width="1024" height="120" aria-label="Live receiver spectrum waterfall"></canvas>
 
 <div id="stations-view" class="tab-view">
   <div id="stations-toolbar">
@@ -273,6 +289,11 @@ const cwStatusEl = document.getElementById('cw-status');
 const cwInProgressEl = document.getElementById('cw-inprogress');
 const cwLogEl = document.getElementById('cw-log');
 const audioToggleBtn = document.getElementById('audio-toggle');
+const gainSelectEl = document.getElementById('gain-select');
+const calibrateBtn = document.getElementById('calibrate-btn');
+const recordIqBtn = document.getElementById('record-iq-btn');
+const receiverStateEl = document.getElementById('receiver-state');
+const waterfallEl = document.getElementById('waterfall');
 const PAGE_SIZE = 500;
 let tunedFreq = null;
 let currentStations = [];
@@ -407,8 +428,11 @@ function rssiCell(s) {
   const content = s.content_db === null || s.content_db === undefined
     ? 'audio unchecked'
     : s.content_db < 3 ? 'noise-like' : `${s.content_db} dB audio content`;
+  const mirror = s.mirror_freq_hz
+    ? ` · possible image ${fmtFreq(s.mirror_freq_hz)}${s.mirror_signal_db === null ? '' : ` (+${s.mirror_signal_db} dB)`}`
+    : '';
   return `<span class="rssi-bar${weak ? ' rssi-weak' : ''}"><span style="width:${pct}%"></span></span>` +
-    `<span class="rssi-val">+${s.signal_db} dB RF · ${content}</span>`;
+    `<span class="rssi-val">+${s.signal_db} dB RF · ${content}${mirror}</span>`;
 }
 
 async function refresh() {
@@ -871,6 +895,105 @@ function startAudio() {
 audioToggleBtn.addEventListener('click', () => {
   if (audioSocket) stopAudio(); else startAudio();
 });
+
+async function stopScanForReceiverAction() {
+  if (!scanInProgress) return true;
+  if (!window.confirm('This receiver action needs a stable frequency. Stop the scan?')) return false;
+  scanAllRunning = false;
+  await fetch('/api/scan/cancel', { method: 'POST' });
+  return true;
+}
+
+gainSelectEl.addEventListener('change', async () => {
+  const response = await fetch('/api/radio/gain', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ gain_db: Number(gainSelectEl.value) }),
+  });
+  if (!response.ok) receiverStateEl.textContent = 'Gain change failed';
+});
+
+calibrateBtn.addEventListener('click', async () => {
+  if (!await stopScanForReceiverAction()) return;
+  const entered = window.prompt('Exact known carrier frequency in Hz:');
+  if (entered === null) return;
+  const reference_hz = Number(entered);
+  if (!Number.isInteger(reference_hz) || reference_hz < 100000) {
+    receiverStateEl.textContent = 'Calibration needs a valid frequency in Hz';
+    return;
+  }
+  calibrateBtn.disabled = true;
+  receiverStateEl.textContent = 'Measuring reference carrier…';
+  try {
+    const response = await fetch('/api/radio/calibrate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        reference_hz,
+        band: reference_hz >= 28800000 ? 'FM' : reference_hz <= 1700000 ? 'AM' : 'SW',
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || 'Calibration failed');
+    const apply = window.confirm(
+      `Measured error ${result.error_hz} Hz. Apply proposed ${result.proposed_ppm} ppm correction?`
+    );
+    if (apply) {
+      const applied = await fetch('/api/radio/ppm', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ppm: result.proposed_ppm }),
+      });
+      if (!applied.ok) throw new Error('Correction could not be applied');
+    }
+    receiverStateEl.textContent = apply ? `${result.proposed_ppm} ppm applied` : 'Calibration not applied';
+  } catch (error) {
+    receiverStateEl.textContent = error.message;
+  } finally {
+    calibrateBtn.disabled = false;
+  }
+});
+
+recordIqBtn.addEventListener('click', async () => {
+  if (!await stopScanForReceiverAction()) return;
+  recordIqBtn.disabled = true;
+  recordIqBtn.textContent = 'Recording…';
+  try {
+    const response = await fetch('/api/iq/record', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ seconds: 5 }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || 'Recording failed');
+    receiverStateEl.textContent = `Saved ${result.data_file}`;
+  } catch (error) {
+    receiverStateEl.textContent = error.message;
+  } finally {
+    recordIqBtn.disabled = false;
+    recordIqBtn.textContent = 'Record IQ · 5s';
+  }
+});
+
+async function updateWaterfall() {
+  if (document.hidden) return;
+  try {
+    const result = await fetch('/api/spectrum').then(response => response.json());
+    const bins = result.power_dbfs || [];
+    if (!bins.length) return;
+    const context = waterfallEl.getContext('2d');
+    context.drawImage(waterfallEl, 0, 0, waterfallEl.width, waterfallEl.height - 1, 0, 1, waterfallEl.width, waterfallEl.height - 1);
+    const width = waterfallEl.width / bins.length;
+    bins.forEach((db, index) => {
+      const strength = Math.max(0, Math.min(1, (db + 90) / 70));
+      const red = Math.round(255 * strength);
+      const green = Math.round(180 * Math.max(0, strength - 0.35));
+      const blue = Math.round(80 + 120 * (1 - strength));
+      context.fillStyle = `rgb(${red},${green},${blue})`;
+      context.fillRect(index * width, 0, Math.ceil(width), 1);
+    });
+  } catch (_) {
+    // Status stream reports receiver loss; the waterfall can remain on its last valid row.
+  }
+}
+setInterval(updateWaterfall, 250);
+
 pagePrevEl.addEventListener('click', () => { pageOffset = Math.max(0, pageOffset - PAGE_SIZE); refresh(); });
 pageNextEl.addEventListener('click', () => { pageOffset += PAGE_SIZE; refresh(); });
 fetch('/api/countries').then(response => response.json()).then(countries => {
@@ -895,6 +1018,10 @@ es.onmessage = (e) => {
   document.getElementById('m-snr').textContent = st.noise_dbfs + ' dBFS';
   document.getElementById('m-audio').textContent = st.audio_dbfs + ' dBFS';
   document.getElementById('m-vol').textContent = st.volume;
+  gainSelectEl.value = String(st.gain_db);
+  receiverStateEl.textContent = st.direct_sampling
+    ? `${st.ppm} ppm · direct sampled · tuner gain bypassed`
+    : `${st.ppm} ppm · ${st.gain_db} dB tuner gain`;
   linkDot.className = 'dot on';
   linkTxt.textContent = 'Live';
 };

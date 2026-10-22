@@ -19,6 +19,7 @@ Author: James Sawyer / JSLabs - https://www.jamessawyer.co.uk/ | https://labs.ja
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import threading
 import time
@@ -45,6 +46,7 @@ DIRECT_SAMPLING_MODE = 2  # Q-branch; the commonly-wired input on most boards
 # this dongle: 0.0 ... 49.6 dB in 29 steps). Fixed rather than "auto" - see
 # the comment in RtlSdrBridge.__init__.
 DEFAULT_GAIN_DB = 40.2
+SUPPORTED_GAIN_DB = (19.7, 28.0, 36.4, 40.2, 49.6)
 
 CW_TONE_LOWPASS_HZ = (
     2_000  # keeps cw_decoder's 300-1200Hz search band, rejects the rest
@@ -85,7 +87,25 @@ class RadioStatus:
     noise_dbfs: int  # nearby RF noise floor, relative dBFS (diagnostic only)
     audio_dbfs: int  # demodulated audio RMS; -120 means digital silence
     volume: int  # software playback gain, 0-100
+    gain_db: float  # tuner gain; bypassed while direct sampling is active
+    ppm: int  # oscillator correction applied by librtlsdr
+    direct_sampling: bool
     seq: int
+
+
+@dataclass
+class _AmDemodState:
+    filter_zi: np.ndarray | None = None
+    level: float = 0.02
+
+
+@dataclass
+class _IqRecording:
+    output: io.BufferedWriter
+    remaining_samples: int
+    complete: threading.Event
+    written_samples: int = 0
+    error: str | None = None
 
 
 class _AudioBus:
@@ -236,29 +256,56 @@ def _decimate_lowpass(
     return y[::_DECIMATION], zf
 
 
-def _demod_am(iq: np.ndarray, zi: np.ndarray | None) -> tuple[np.ndarray, np.ndarray]:
+def _demod_am(iq: np.ndarray, state: _AmDemodState) -> tuple[np.ndarray, _AmDemodState]:
     envelope = np.abs(iq)
     envelope = envelope - np.mean(envelope)  # strip the DC/carrier component
-    decimated, zf = _decimate_lowpass(envelope, _AM_SOS, zi)
-    peak = float(np.max(np.abs(decimated))) + 1e-9
+    decimated, zf = _decimate_lowpass(envelope, _AM_SOS, state.filter_zi)
+    rms = float(np.sqrt(np.mean(np.square(decimated, dtype=np.float64))))
+    coefficient = 0.25 if rms > state.level else 0.02
+    level = coefficient * rms + (1 - coefficient) * state.level
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug(
-            "am demod: iq |mean|=%.6g iq_max=%.6g env_std=%.6g decimated_peak=%.6g",
+            "am demod: iq |mean|=%.6g iq_max=%.6g env_std=%.6g agc_level=%.6g",
             float(np.mean(np.abs(iq))),
             float(np.max(np.abs(iq))),
             float(np.std(envelope)),
-            peak,
+            level,
         )
-    # AM/SW go through direct sampling (see module docstring), which
-    # bypasses the R820T tuner - and its gain stage - entirely, so these
-    # signals arrive at the ADC dramatically weaker than FM's (which does
-    # get DEFAULT_GAIN_DB of real analog gain first). The floor here only
-    # exists to stop true silence from blowing up into full-volume hiss on
-    # division by a near-zero peak; it must stay well below any real
-    # direct-sampling signal's peak, or genuine weak signals get divided by
-    # the floor instead of their own peak and come out far too quiet to
-    # hear - which is exactly what was happening at 0.05.
-    return (decimated / max(peak, 0.001)).astype(np.float32), zf  # crude AGC
+    gain = min(20.0, 0.2 / max(level, 0.001))
+    audio = np.clip(decimated * gain, -1.0, 1.0).astype(np.float32)
+    return audio, _AmDemodState(zf, level)
+
+
+def spectrum_dbfs(iq: np.ndarray, bins: int = 512) -> list[float]:
+    """Return a bounded, display-oriented FFT row."""
+    if iq.size < bins or bins <= 0:
+        return []
+    sample = iq[-bins:] - np.mean(iq[-bins:])
+    window = np.hanning(bins)
+    power = np.abs(np.fft.fftshift(np.fft.fft(sample * window))) ** 2 / max(
+        float(np.sum(window)) ** 2, 1.0
+    )
+    db = 10 * np.log10(np.maximum(power, 1e-12))
+    return np.clip(db, -120, 0).astype(float).tolist()
+
+
+def carrier_offset_hz(iq: np.ndarray, expected_offset_hz: int) -> float:
+    """Estimate a narrow carrier near a known offset from the tuned centre."""
+    if iq.size < 4096:
+        raise ValueError("at least 4096 IQ samples are required")
+    centered = iq - np.mean(iq)
+    window = np.hanning(iq.size)
+    power = np.abs(np.fft.fftshift(np.fft.fft(centered * window))) ** 2
+    frequencies = np.fft.fftshift(np.fft.fftfreq(iq.size, 1 / IQ_SAMPLE_RATE))
+    search = np.abs(frequencies - expected_offset_hz) <= 20_000
+    if not np.any(search):
+        raise ValueError("reference offset is outside the captured spectrum")
+    candidate_power = power[search]
+    peak = int(np.argmax(candidate_power))
+    noise = float(np.median(candidate_power))
+    if float(candidate_power[peak]) < max(noise * 20, 1e-12):
+        raise ValueError("no unambiguous reference carrier found")
+    return float(frequencies[search][peak])
 
 
 def _demod_fm(
@@ -304,7 +351,9 @@ class RtlSdrBridge:
         # to fill the ADC's dynamic range regardless of actual input signal
         # strength, which also moves the measured noise floor. Fixed gain keeps
         # noise-relative measurements comparable between tuning operations.
-        self._sdr.gain = DEFAULT_GAIN_DB
+        self._gain_db = DEFAULT_GAIN_DB
+        self._ppm = 0
+        self._sdr.gain = self._gain_db
         self._direct_sampling_active = False
 
         self._state_lock = threading.Lock()
@@ -318,6 +367,11 @@ class RtlSdrBridge:
         self._seq = 0
 
         self._audio_bus = _AudioBus()
+
+        self._iq_lock = threading.Lock()
+        self._latest_iq = np.zeros(0, dtype=np.complex64)
+        self._latest_spectrum: list[float] = []
+        self._recording: _IqRecording | None = None
 
         self._subscribers_lock = threading.Lock()
         self._subscribers: dict[
@@ -335,11 +389,20 @@ class RtlSdrBridge:
     def close(self) -> None:
         self._stop.set()
         self._worker.join(timeout=2)
+        with self._iq_lock:
+            if self._recording is not None:
+                self._recording.error = "radio closed"
+                self._recording.output.close()
+                self._recording.complete.set()
+                self._recording = None
         self._sdr.close()
 
     # ---- tuning -------------------------------------------------------
 
     def _apply_frequency(self, frequency_hz: int) -> None:
+        with self._state_lock:
+            gain_db = self._gain_db
+            ppm = self._ppm
         needs_direct = frequency_hz < DIRECT_SAMPLING_THRESHOLD_HZ
         if needs_direct != self._direct_sampling_active:
             try:
@@ -357,7 +420,8 @@ class RtlSdrBridge:
                 self._sdr.close()
                 self._sdr = RtlSdr(self._device_index)
                 self._sdr.sample_rate = IQ_SAMPLE_RATE
-                self._sdr.gain = DEFAULT_GAIN_DB
+                self._sdr.gain = gain_db
+                self._sdr.freq_correction = ppm
                 if needs_direct:
                     self._sdr.set_direct_sampling(DIRECT_SAMPLING_MODE)
             self._direct_sampling_active = needs_direct
@@ -366,6 +430,9 @@ class RtlSdrBridge:
                 "enabled" if needs_direct else "disabled",
                 frequency_hz,
             )
+        self._sdr.freq_correction = ppm
+        if not needs_direct:
+            self._sdr.gain = gain_db
         self._sdr.center_freq = frequency_hz
 
     def tune_to(self, frequency_hz: int, band: str) -> bool:
@@ -411,6 +478,47 @@ class RtlSdrBridge:
         with self._state_lock:
             self._mode = mode.upper()
         return True
+
+    def set_gain(self, gain_db: float) -> None:
+        if gain_db not in SUPPORTED_GAIN_DB:
+            raise ValueError(f"unsupported tuner gain: {gain_db}")
+        with self._state_lock:
+            self._gain_db = gain_db
+        self._retune.set()
+
+    def set_frequency_correction(self, ppm: int) -> None:
+        if not -200 <= ppm <= 200:
+            raise ValueError("frequency correction must be between -200 and 200 ppm")
+        with self._state_lock:
+            self._ppm = ppm
+        self._retune.set()
+
+    def spectrum(self) -> list[float]:
+        with self._iq_lock:
+            return list(self._latest_spectrum)
+
+    def estimate_reference(self, expected_offset_hz: int) -> float:
+        with self._iq_lock:
+            iq = self._latest_iq.copy()
+        return carrier_offset_hz(iq, expected_offset_hz)
+
+    def record_iq(self, output: io.BufferedWriter, seconds: float) -> int:
+        requested_samples = round(seconds * IQ_SAMPLE_RATE)
+        recording = _IqRecording(output, requested_samples, threading.Event())
+        with self._iq_lock:
+            if self._recording is not None:
+                raise RuntimeError("an IQ recording is already running")
+            self._recording = recording
+        if not recording.complete.wait(timeout=seconds + 5):
+            with self._iq_lock:
+                if self._recording is recording:
+                    self._recording = None
+                    recording.error = "IQ recording timed out"
+                    recording.output.close()
+            raise TimeoutError(recording.error)
+        if recording.error:
+            raise RuntimeError(recording.error)
+        return recording.written_samples
 
     def volume_up(self) -> None:
         with self._state_lock:
@@ -465,7 +573,9 @@ class RtlSdrBridge:
         self._apply_frequency(freq)
         prev_fm_sample: complex | None = None
         filter_zi: np.ndarray | None = None
+        am_state = _AmDemodState()
         signal_history: deque[tuple[int, int, int]] = deque(maxlen=12)
+        spectrum_countdown = 0
 
         while not self._stop.is_set():
             # The whole iteration is one try/except: this thread has no
@@ -475,6 +585,12 @@ class RtlSdrBridge:
             # container restarts - log it and keep going instead.
             try:
                 if self._retune.is_set():
+                    with self._iq_lock:
+                        if self._recording is not None:
+                            self._recording.error = "radio retuned during IQ recording"
+                            self._recording.output.close()
+                            self._recording.complete.set()
+                            self._recording = None
                     with self._state_lock:
                         freq, band, mode = self._frequency_hz, self._band, self._mode
                     self._apply_frequency(freq)
@@ -482,10 +598,40 @@ class RtlSdrBridge:
                     filter_zi = (
                         None  # a new frequency isn't a continuation of the old stream
                     )
+                    am_state = _AmDemodState()
                     signal_history.clear()
                     self._retune.clear()
 
                 iq = self._sdr.read_samples(CHUNK_IQ_SAMPLES)
+
+                spectrum_countdown -= 1
+                next_spectrum = None
+                if spectrum_countdown <= 0:
+                    next_spectrum = spectrum_dbfs(iq)
+                    spectrum_countdown = 6
+                with self._iq_lock:
+                    self._latest_iq = iq.astype(np.complex64, copy=True)
+                    if next_spectrum is not None:
+                        self._latest_spectrum = next_spectrum
+                    recording = self._recording
+                    if recording is not None:
+                        count = min(recording.remaining_samples, iq.size)
+                        values = np.empty(count * 2, dtype=np.int8)
+                        values[0::2] = np.clip(np.real(iq[:count]) * 127, -128, 127)
+                        values[1::2] = np.clip(np.imag(iq[:count]) * 127, -128, 127)
+                        try:
+                            recording.output.write(values.tobytes())
+                            recording.written_samples += count
+                            recording.remaining_samples -= count
+                            if recording.remaining_samples == 0:
+                                recording.output.close()
+                                recording.complete.set()
+                                self._recording = None
+                        except OSError as exc:
+                            recording.error = str(exc)
+                            recording.output.close()
+                            recording.complete.set()
+                            self._recording = None
 
                 if mode == "FM":
                     audio, prev_fm_sample, filter_zi = _demod_fm(
@@ -496,7 +642,7 @@ class RtlSdrBridge:
                     audio, filter_zi = _demod_cw_tone(iq, filter_zi)
                     metrics = _estimate_signal(iq, CW_CHANNEL_BW_HZ)
                 else:
-                    audio, filter_zi = _demod_am(iq, filter_zi)
+                    audio, am_state = _demod_am(iq, am_state)
                     metrics = _estimate_signal(iq, AM_CHANNEL_BW_HZ)
 
                 audio_dbfs = _audio_level_dbfs(audio)
@@ -513,6 +659,8 @@ class RtlSdrBridge:
 
                 with self._state_lock:
                     volume = self._volume
+                    gain_db = self._gain_db
+                    ppm = self._ppm
                 audio = np.clip(audio * (volume / 100.0), -1.0, 1.0)
 
                 self._audio_bus.publish(audio)
@@ -528,6 +676,9 @@ class RtlSdrBridge:
                         noise_dbfs=noise_dbfs,
                         audio_dbfs=audio_dbfs,
                         volume=volume,
+                        gain_db=gain_db,
+                        ppm=ppm,
+                        direct_sampling=self._direct_sampling_active,
                         seq=self._seq,
                     )
             except Exception:

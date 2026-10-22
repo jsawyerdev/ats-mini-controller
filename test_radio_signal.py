@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 import numpy as np
 
 import radio_bridge
@@ -10,9 +12,13 @@ from radio_bridge import (
     AUDIO_RATE,
     FM_CHANNEL_BW_HZ,
     IQ_SAMPLE_RATE,
+    _AmDemodState,
     _audio_level_dbfs,
+    _demod_am,
     _estimate_signal,
     audio_content_db,
+    carrier_offset_hz,
+    spectrum_dbfs,
 )
 
 
@@ -70,6 +76,9 @@ def test_failed_direct_sampling_switch_reopens_device(monkeypatch) -> None:
     bridge._device_index = 0
     bridge._sdr = BrokenSdr()
     bridge._direct_sampling_active = True
+    bridge._gain_db = radio_bridge.DEFAULT_GAIN_DB
+    bridge._ppm = 0
+    bridge._state_lock = threading.Lock()
 
     bridge._apply_frequency(98_800_000)
 
@@ -77,6 +86,38 @@ def test_failed_direct_sampling_switch_reopens_device(monkeypatch) -> None:
     assert reopened.sample_rate == IQ_SAMPLE_RATE
     assert reopened.center_freq == 98_800_000
     assert bridge._direct_sampling_active is False
+
+
+def test_stateful_am_agc_is_bounded_and_tracks_programme() -> None:
+    time_s = np.arange(32_768) / IQ_SAMPLE_RATE
+    carrier = (1 + 0.2 * np.sin(2 * np.pi * 1_000 * time_s)).astype(np.complex64)
+    state = _AmDemodState()
+
+    first, state = _demod_am(carrier, state)
+    second, state = _demod_am(carrier, state)
+
+    assert np.max(np.abs(second)) <= 1
+    assert _audio_level_dbfs(second) > -30
+    assert state.level > 0
+    assert abs(_audio_level_dbfs(first) - _audio_level_dbfs(second)) <= 6
+
+
+def test_spectrum_is_bounded_for_browser_transport() -> None:
+    row = spectrum_dbfs(np.ones(4096, dtype=np.complex64), bins=512)
+    assert len(row) == 512
+    assert all(-120 <= value <= 0 for value in row)
+
+
+def test_carrier_offset_estimator_finds_known_reference() -> None:
+    samples = 32_768
+    expected_hz = 100_000
+    actual_hz = 100_250
+    time_s = np.arange(samples) / IQ_SAMPLE_RATE
+    carrier = np.exp(2j * np.pi * actual_hz * time_s).astype(np.complex64)
+
+    measured_hz = carrier_offset_hz(carrier, expected_hz)
+
+    assert abs(measured_hz - actual_hz) <= IQ_SAMPLE_RATE / samples
 
 
 def test_broadband_noise_is_not_a_station() -> None:

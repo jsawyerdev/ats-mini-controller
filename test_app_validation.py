@@ -23,6 +23,8 @@ def _assert_invalid(model: type[BaseModel], **values: object) -> None:
 def test_tune_request_rejects_invalid_frequency_and_band() -> None:
     _assert_invalid(app.TuneRequest, frequency_hz=0, band="FM")
     _assert_invalid(app.TuneRequest, frequency_hz=100_000_000, band="invalid")
+    assert app._mirror_frequency(15_245_200) == 13_554_800
+    assert app._mirror_frequency(89_300_000) is None
 
 
 def test_scan_request_bounds_work_and_duration() -> None:
@@ -30,6 +32,10 @@ def test_scan_request_bounds_work_and_duration() -> None:
     _assert_invalid(app.ScanRequest, stations=[])
     _assert_invalid(app.ScanRequest, stations=[target], settle_s=10.1)
     _assert_invalid(app.ScanRequest, stations=[target] * 201)
+    _assert_invalid(app.PpmRequest, ppm=201)
+    _assert_invalid(app.IqRecordingRequest, seconds=0.9)
+    _assert_invalid(app.IqRecordingRequest, seconds=10.1)
+    _assert_invalid(app.CalibrationRequest, reference_hz=0, band="FM")
 
 
 def test_cw_requests_reject_empty_or_unbounded_work() -> None:
@@ -51,6 +57,41 @@ def test_health_reports_radio_readiness() -> None:
         response = Response()
         assert app.health(response) == {"ok": True, "radio_connected": True}
         assert response.status_code == 200
+    finally:
+        app.bridge = original_bridge
+
+
+def test_calibration_proposes_correction_and_restores_reference(monkeypatch) -> None:
+    class FakeRadio:
+        def __init__(self) -> None:
+            self.frequency_hz = 0
+            self.tunes = []
+
+        def tune_to(self, frequency_hz: int, band: str) -> bool:
+            self.frequency_hz = frequency_hz
+            self.tunes.append((frequency_hz, band))
+            return True
+
+        def latest_status(self):
+            return SimpleNamespace(frequency_hz=self.frequency_hz, ppm=0)
+
+        def estimate_reference(self, expected_offset_hz: int) -> float:
+            assert expected_offset_hz == 100_000
+            return 100_100
+
+    fake = FakeRadio()
+    original_bridge = app.bridge
+    try:
+        app.bridge = fake
+        monkeypatch.setattr(app.time, "sleep", lambda _: None)
+
+        result = app.calibrate(
+            app.CalibrationRequest(reference_hz=10_000_000, band="SW")
+        )
+
+        assert result["error_hz"] == 100
+        assert result["proposed_ppm"] == -10
+        assert fake.tunes == [(9_900_000, "SW"), (10_000_000, "SW")]
     finally:
         app.bridge = original_bridge
 
