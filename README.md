@@ -14,7 +14,7 @@ Author: **James Sawyer / JSLabs** — [jamessawyer.co.uk](https://www.jamessawye
 
 - **Station browser**: 50,000+ shortwave, AM, and FM records from EiBi (global shortwave schedules), the FCC (US/Canada AM+FM), and Ofcom (UK AM+FM). Search by name, country, or language; filter by band or country; and see which shortwave broadcasts are on air now in your local time.
 - **Click to tune**: click any station in the browser and the SDR retunes instantly — a direct frequency set, not a multi-second band search.
-- **Signal scanning**: checks all 2,312 unique catalogue frequencies, compares each channel with its nearby RF noise floor, and prioritises targets with non-silent audio. Results and last-checked times persist across restarts.
+- **Signal scanning**: checks all 2,312 unique catalogue frequencies, compares each channel with its nearby RF noise floor, then analyses RF candidates for structured audio so amplified hiss is not presented as useful listening. Results and last-checked times persist across restarts.
 - **CW (Morse code) monitor**: cycles known CW-heavy frequencies (propagation beacons, ham calling frequencies), locks onto whichever one has real keying, and decodes it live in the browser — timestamped, frequency-tagged, scrolling — until the signal stops or fades below detection.
 - **Live audio**: streams the demodulated audio to your browser over WebSocket and plays it via the Web Audio API — no physical audio cable needed, and it works from any machine on the network, not just whatever's plugged into the radio.
 
@@ -23,6 +23,11 @@ Author: **James Sawyer / JSLabs** — [jamessawyer.co.uk](https://www.jamessawye
 - Any RTL2832U-based RTL-SDR USB dongle.
 - FM broadcast (88-108 MHz) is within the tuner IC's normal range on every RTL-SDR dongle. AM/mediumwave (530-1700 kHz) and shortwave (1.6-30 MHz) are both below the tuner's PLL floor (~24-28 MHz) and are received via the RTL2832U's direct-sampling mode instead — a standard chip capability, but whether a given dongle's PCB actually wires that input to a usable antenna path varies by board. **Verify AM/SW reception against a real antenna and a known signal before relying on it**; this can't be confirmed from software alone.
 - An antenna suited to the band you're targeting: the dongle's stock antenna is usually adequate for local FM, but shortwave/AM reception benefits substantially from a longer wire antenna.
+
+The deployed Pi has an external antenna connected, but the dongle identifies only as a generic
+`0bda:2838 RTL2838UHIDIR`. That does not prove the connector is routed to the Q-branch used for
+HF. See the measured signal-path evidence and physical verification plan in
+[HARDWARE.md](HARDWARE.md).
 
 ## Running it
 
@@ -98,7 +103,7 @@ The meter bar at the top is always live: current frequency, band/mode, signal ab
 
 ### Signal scanning
 
-Click **Scan signals (visible)** to measure up to 200 stations on the current page. The scanner compares in-channel spectral power with nearby spectrum captured at the same instant, rejects the dongle's centre-frequency DC spike, and smooths twelve sample windows. The **Viable only (scanned)** checkbox keeps results with non-silent audio at least 6 dB above noise on FM or 10 dB above noise on direct-sampled AM/SW. Measurements persist across restarts.
+Click **Scan signals (visible)** to measure up to 200 stations on the current page. The scanner compares in-channel spectral power with nearby spectrum captured at the same instant and rejects the dongle's centre-frequency DC spike. RF candidates then receive a 1.5-second audio-content check. The **Viable only (scanned)** checkbox keeps results with non-silent, structured audio at least 6 dB above noise on FM or 10 dB above noise on direct-sampled AM/SW. Flat broadband hiss is labelled **noise-like** instead of being promoted as a viable station. Measurements persist across restarts.
 
 **Scan all stations** always walks all 2,312 unique catalogue frequencies in batches of 200.
 Search, band, country, page, on-air, and viable-only filters never narrow a full scan. Identical
@@ -106,9 +111,11 @@ frequencies are measured once because multiple station records can describe the 
 Completed batches remain saved, updating both **Signal** and **Last checked**.
 
 The inline progress panel shows the current phase, band and frequency, completed and total
-targets, percentage, elapsed time, estimated time remaining, and a progress bar. The scan button
+targets, percentage, elapsed time, estimated time remaining, and a progress bar. Candidate audio
+analysis is shown as its own phase. The scan button
 becomes a stop control while running. At the default 0.7-second settling time, a complete sweep
-takes about 27 minutes on the deployed Raspberry Pi.
+took about 27 minutes on the deployed Raspberry Pi before audio classification; each RF candidate
+now adds a 1.5-second content capture, so the total depends on how many channels pass the RF gate.
 
 Tuning a station while scanning asks before it stops the sweep. A scan and uninterrupted listening
 cannot run simultaneously on one dongle: scanning necessarily retunes the same RF front end. A
@@ -128,8 +135,9 @@ The **Audio** toggle in the meter bar opens a WebSocket to the server and stream
 
 ## Known limitations
 
-- AM/shortwave reception depends on the RTL-SDR dongle's direct-sampling input actually being wired to a usable antenna path - this varies by board and hasn't been verified against a real signal on the deployed hardware. FM broadcast is unaffected (it's within the tuner IC's normal range on every RTL-SDR dongle).
-- Signal and noise figures are software estimates, not calibrated receiver measurements. A local interferer inside the channel can still look like a station; listening remains the final check.
+- AM/shortwave reception depends on the RTL-SDR dongle's direct-sampling input actually being wired to the external antenna path. That routing is unverified on the deployed generic board.
+- Direct sampling aliases signals around the 28.8 MHz ADC clock: `f` and `28.8 MHz - f` can represent the same RF energy. Without preselection, a database label is a schedule match, not station identification.
+- Signal, noise, and audio-content figures are software estimates, not calibrated receiver measurements. Structured interference can still pass; listening and an identifier remain the final attribution checks.
 - CW decoding needs a genuinely strong, clean signal. A stock whip antenna indoors will often not be enough for weak DX or beacon traffic even when everything else is working correctly.
 - Signal scanning and CW listening are one-user-at-a-time operations on the radio itself: a manual tune always interrupts a running scan or the CW monitor.
 
@@ -144,6 +152,15 @@ The **Audio** toggle in the meter bar opens a WebSocket to the server and stream
 
 ### Unreleased
 
+### 2.7.0 - 2026-10-22
+
+#### Fixed
+
+- Added a second-stage audio-content measurement for RF candidates so stationary broadband hiss
+  is labelled noise-like and excluded from viable/strongest-target results.
+- Existing cached measurements are deliberately unclassified until rescanned because they lack
+  the new audio-content evidence.
+
 #### Documentation
 
 - Moved the complete changelog into this README so releases, setup, usage, limitations, and change
@@ -151,6 +168,9 @@ The **Audio** toggle in the meter bar opens a WebSocket to the server and stream
 - Updated the user guide to distinguish page-scoped and full-catalogue scans and document
   viability thresholds, persistent results, detailed progress, interruption behaviour, and the
   measured full-scan duration on Raspberry Pi.
+- Added a hardware and signal-validity audit documenting the external antenna, generic USB
+  identity, unverified Q-branch routing, measured direct-sampling aliases, software evidence,
+  limitations, falsification criteria, and an ordered hardware isolation plan.
 
 ### 2.6.1 - 2026-10-22
 

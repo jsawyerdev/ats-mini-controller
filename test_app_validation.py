@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import sqlite3
+from types import SimpleNamespace
 
+import numpy as np
 from fastapi import Response
 from pydantic import BaseModel, ValidationError
 
@@ -77,14 +79,14 @@ def test_station_signal_sort_is_numeric_global_and_unscanned_last(tmp_path) -> N
     with sqlite3.connect(signal_path) as conn:
         conn.execute(
             "CREATE TABLE signal_measurements (freq_hz INTEGER PRIMARY KEY, signal_db INTEGER, "
-            "noise_dbfs INTEGER, audio_dbfs INTEGER, measured_at REAL)"
+            "noise_dbfs INTEGER, audio_dbfs INTEGER, content_db INTEGER, measured_at REAL)"
         )
         conn.executemany(
-            "INSERT INTO signal_measurements VALUES (?, ?, -50, -20, 1.0)",
+            "INSERT INTO signal_measurements VALUES (?, ?, -50, -20, 10, 1.0)",
             [(91_000_000, 7), (92_000_000, 21)],
         )
         conn.execute(
-            "INSERT INTO signal_measurements VALUES (94000000, 30, -50, -120, 1.0)"
+            "INSERT INTO signal_measurements VALUES (94000000, 30, -50, -120, 10, 1.0)"
         )
 
     original_db_path = app.DB_PATH
@@ -94,7 +96,9 @@ def test_station_signal_sort_is_numeric_global_and_unscanned_last(tmp_path) -> N
         app.SIGNAL_DB_PATH = signal_path
         descending = app.list_stations("", "", "", 10, 0, "signal", "desc")["stations"]
         ascending = app.list_stations("", "", "", 10, 0, "signal", "asc")["stations"]
-        uk_stations = app.list_stations("", "", "GB", 10, 0, "frequency", "asc")["stations"]
+        uk_stations = app.list_stations("", "", "GB", 10, 0, "frequency", "asc")[
+            "stations"
+        ]
         countries = app.list_countries()
         scan_targets = app.list_scan_targets()
     finally:
@@ -102,10 +106,18 @@ def test_station_signal_sort_is_numeric_global_and_unscanned_last(tmp_path) -> N
         app.SIGNAL_DB_PATH = original_signal_path
 
     assert [station["name"] for station in descending] == [
-        "Strong", "Weak", "Silent spur", "Unscanned", "Ofcom"
+        "Strong",
+        "Weak",
+        "Silent spur",
+        "Unscanned",
+        "Ofcom",
     ]
     assert [station["name"] for station in ascending] == [
-        "Weak", "Strong", "Silent spur", "Unscanned", "Ofcom"
+        "Weak",
+        "Strong",
+        "Silent spur",
+        "Unscanned",
+        "Ofcom",
     ]
     assert [(station["name"], station["country"]) for station in uk_stations] == [
         ("Unscanned", "GB"),
@@ -163,12 +175,65 @@ def test_scan_status_exposes_operator_progress() -> None:
 
 
 def test_viability_uses_band_specific_rf_thresholds_and_rejects_silence() -> None:
-    assert app._is_viable("FM", signal_db=6, audio_dbfs=-20)
-    assert not app._is_viable("FM", signal_db=5, audio_dbfs=-20)
-    assert app._is_viable("AM", signal_db=10, audio_dbfs=-20)
-    assert app._is_viable("SW", signal_db=10, audio_dbfs=-20)
-    assert not app._is_viable("SW", signal_db=9, audio_dbfs=-20)
-    assert not app._is_viable("FM", signal_db=30, audio_dbfs=-120)
+    assert app._is_viable("FM", signal_db=6, audio_dbfs=-20, content_db=3)
+    assert not app._is_viable("FM", signal_db=5, audio_dbfs=-20, content_db=20)
+    assert app._is_viable("AM", signal_db=10, audio_dbfs=-20, content_db=3)
+    assert app._is_viable("SW", signal_db=10, audio_dbfs=-20, content_db=3)
+    assert not app._is_viable("SW", signal_db=9, audio_dbfs=-20, content_db=20)
+    assert not app._is_viable("FM", signal_db=30, audio_dbfs=-120, content_db=20)
+    assert not app._is_viable("FM", signal_db=30, audio_dbfs=-20, content_db=2)
+    assert not app._is_viable("FM", signal_db=30, audio_dbfs=-20, content_db=None)
+
+
+def test_scan_rejects_rf_candidate_when_audio_is_noise_like(
+    tmp_path, monkeypatch
+) -> None:
+    class FakeRadio:
+        def tune_to(self, frequency_hz: int, band: str) -> bool:
+            self.frequency_hz = frequency_hz
+            return True
+
+        def latest_status(self):
+            return SimpleNamespace(
+                frequency_hz=self.frequency_hz,
+                signal_db=18,
+                noise_dbfs=-48,
+                audio_dbfs=-42,
+            )
+
+        def capture_audio(self, seconds: float):
+            assert seconds == app.CONTENT_CAPTURE_S
+            return np.ones(72_000, dtype=np.float32)
+
+    signal_path = tmp_path / "signal.db"
+    original_bridge = app.bridge
+    original_path = app.SIGNAL_DB_PATH
+    original_cache = app.signal_cache.copy()
+    try:
+        app.bridge = FakeRadio()
+        app.SIGNAL_DB_PATH = signal_path
+        app.signal_cache.clear()
+        app._init_signal_store()
+        monkeypatch.setattr(app.time, "sleep", lambda _: None)
+        monkeypatch.setattr(app, "audio_content_db", lambda *_: 0)
+
+        result = app.scan(
+            app.ScanRequest(stations=[app.ScanTarget(freq_hz=15_245_200, band="SW")])
+        )
+
+        assert result["results"][0]["content_db"] == 0
+        assert result["results"][0]["viable"] is False
+        with sqlite3.connect(signal_path) as conn:
+            stored = conn.execute(
+                "SELECT content_db FROM signal_measurements WHERE freq_hz = 15245200"
+            ).fetchone()
+        assert stored == (0,)
+    finally:
+        app.bridge = original_bridge
+        app.SIGNAL_DB_PATH = original_path
+        app.signal_cache.clear()
+        app.signal_cache.update(original_cache)
+        app.scan_cancel.clear()
 
 
 def test_scan_targets_dedupe_conflicting_band_labels(tmp_path) -> None:
@@ -198,7 +263,9 @@ def test_scan_targets_dedupe_conflicting_band_labels(tmp_path) -> None:
         app.DB_PATH = original_path
 
 
-def test_signal_store_migrates_existing_measurements_with_unknown_audio(tmp_path) -> None:
+def test_signal_store_migrates_existing_measurements_with_unknown_audio(
+    tmp_path,
+) -> None:
     signal_path = tmp_path / "legacy-signal.db"
     with sqlite3.connect(signal_path) as conn:
         conn.execute(
@@ -214,9 +281,13 @@ def test_signal_store_migrates_existing_measurements_with_unknown_audio(tmp_path
         app.signal_cache.clear()
         app._init_signal_store()
         with sqlite3.connect(signal_path) as conn:
-            columns = {row[1] for row in conn.execute("PRAGMA table_info(signal_measurements)")}
+            columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(signal_measurements)")
+            }
         assert "audio_dbfs" in columns
+        assert "content_db" in columns
         assert app.signal_cache[963_000]["audio_dbfs"] is None
+        assert app.signal_cache[963_000]["content_db"] is None
     finally:
         app.SIGNAL_DB_PATH = original_path
         app.signal_cache.clear()

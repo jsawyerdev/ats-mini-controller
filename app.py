@@ -27,7 +27,13 @@ import cw_decoder
 from audio_passthrough import serve_audio_websocket
 from cw_monitor import CwMonitor
 from cw_monitor import CwTarget as MonitorCwTarget
-from radio_bridge import RtlSdrBridge, find_rtlsdr_device
+from radio_bridge import (
+    AM_AUDIO_BW_HZ,
+    FM_AUDIO_BW_HZ,
+    RtlSdrBridge,
+    audio_content_db,
+    find_rtlsdr_device,
+)
 
 
 def configure_logging() -> None:
@@ -37,7 +43,9 @@ def configure_logging() -> None:
     compose.yaml) without a code change."""
     level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
-    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
 
 
 configure_logging()
@@ -45,25 +53,38 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "data" / "stations.db"
 SIGNAL_DB_PATH = Path(__file__).parent / "data" / "signal_cache.db"
-APP_VERSION = "2.6.1"
+APP_VERSION = "2.7.0"
 
 MIN_VIABLE_FM_SIGNAL_DB = 6
 MIN_VIABLE_DIRECT_SIGNAL_DB = 10
 MIN_AUDIBLE_DBFS = -50
+AUDIO_CONTENT_THRESHOLD_DB = 3
+CONTENT_CAPTURE_S = 1.5
 
 COUNTRY_NAMES = {"CA": "Canada", "GB": "United Kingdom", "US": "United States"}
 
 
-def _is_viable(band: str, signal_db: int, audio_dbfs: int) -> bool:
+def _is_rf_candidate(band: str, signal_db: int, audio_dbfs: int) -> bool:
     minimum_signal = (
         MIN_VIABLE_FM_SIGNAL_DB if band == "FM" else MIN_VIABLE_DIRECT_SIGNAL_DB
     )
     return signal_db >= minimum_signal and audio_dbfs >= MIN_AUDIBLE_DBFS
 
 
+def _is_viable(
+    band: str, signal_db: int, audio_dbfs: int, content_db: int | None
+) -> bool:
+    return (
+        _is_rf_candidate(band, signal_db, audio_dbfs)
+        and content_db is not None
+        and content_db >= AUDIO_CONTENT_THRESHOLD_DB
+    )
+
+
 def _viable_sql() -> str:
     return (
         f"m.audio_dbfs >= {MIN_AUDIBLE_DBFS} AND "
+        f"m.content_db >= {AUDIO_CONTENT_THRESHOLD_DB} AND "
         f"((s.band = 'FM' AND m.signal_db >= {MIN_VIABLE_FM_SIGNAL_DB}) OR "
         f"(s.band <> 'FM' AND m.signal_db >= {MIN_VIABLE_DIRECT_SIGNAL_DB}))"
     )
@@ -123,20 +144,32 @@ def _init_signal_store() -> None:
             signal_db INTEGER NOT NULL,
             noise_dbfs INTEGER NOT NULL,
             audio_dbfs INTEGER,
+            content_db INTEGER,
             measured_at REAL NOT NULL
         )
         """)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(signal_measurements)")}
     if "audio_dbfs" not in columns:
         conn.execute("ALTER TABLE signal_measurements ADD COLUMN audio_dbfs INTEGER")
+    if "content_db" not in columns:
+        conn.execute("ALTER TABLE signal_measurements ADD COLUMN content_db INTEGER")
     conn.commit()
-    for freq_hz, signal_db, noise_dbfs, audio_dbfs, measured_at in conn.execute(
-        "SELECT freq_hz, signal_db, noise_dbfs, audio_dbfs, measured_at FROM signal_measurements"
+    for (
+        freq_hz,
+        signal_db,
+        noise_dbfs,
+        audio_dbfs,
+        content_db,
+        measured_at,
+    ) in conn.execute(
+        "SELECT freq_hz, signal_db, noise_dbfs, audio_dbfs, content_db, measured_at "
+        "FROM signal_measurements"
     ):
         signal_cache[freq_hz] = {
             "signal_db": signal_db,
             "noise_dbfs": noise_dbfs,
             "audio_dbfs": audio_dbfs,
+            "content_db": content_db,
             "measured_at": measured_at,
         }
     conn.close()
@@ -152,13 +185,14 @@ def _persist_signal(freq_hz: int, entry: dict) -> None:
         with conn:
             conn.execute(
                 "INSERT OR REPLACE INTO signal_measurements "
-                "(freq_hz, signal_db, noise_dbfs, audio_dbfs, measured_at) "
-                "VALUES (?, ?, ?, ?, ?)",
+                "(freq_hz, signal_db, noise_dbfs, audio_dbfs, content_db, measured_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     freq_hz,
                     entry["signal_db"],
                     entry["noise_dbfs"],
                     entry["audio_dbfs"],
+                    entry["content_db"],
                     entry["measured_at"],
                 ),
             )
@@ -170,7 +204,9 @@ def _connect_radio() -> None:
     global bridge
     _init_signal_store()
     if not find_rtlsdr_device():
-        logger.error("RTL-SDR dongle not found on any USB port; tuning endpoints will fail")
+        logger.error(
+            "RTL-SDR dongle not found on any USB port; tuning endpoints will fail"
+        )
         return
     try:
         bridge = RtlSdrBridge()
@@ -259,16 +295,13 @@ def list_stations(
         }
         sort_column = sort_columns[sort]
         if sort == "signal":
-            missing_last = (
-                f"({_viable_sql()}) DESC, "
-                "m.signal_db IS NULL ASC, "
-            )
+            missing_last = f"({_viable_sql()}) DESC, m.signal_db IS NULL ASC, "
         elif sort == "last_checked":
             missing_last = "m.measured_at IS NULL ASC, "
         else:
             missing_last = ""
         rows = conn.execute(
-            "SELECT s.*, m.signal_db, m.noise_dbfs, m.audio_dbfs, "
+            "SELECT s.*, m.signal_db, m.noise_dbfs, m.audio_dbfs, m.content_db, "
             f"({_viable_sql()}) AS viable, m.measured_at "
             "FROM stations s LEFT JOIN signal_store.signal_measurements m "
             "ON m.freq_hz = s.freq_hz "
@@ -389,7 +422,9 @@ def scan(req: ScanRequest) -> dict:
     started_at = time.monotonic()
     logger.info(
         "scan: starting %d targets (requested %d, settle_s=%.2f)",
-        len(targets), requested, req.settle_s,
+        len(targets),
+        requested,
+        req.settle_s,
     )
     skipped_duplicate = 0
     skipped_mismatch = 0
@@ -421,28 +456,54 @@ def scan(req: ScanRequest) -> dict:
             skipped_mismatch += 1
             logger.debug(
                 "scan: skipped %d Hz - status mismatch (got %s)",
-                target.freq_hz, st.frequency_hz if st else None,
+                target.freq_hz,
+                st.frequency_hz if st else None,
             )
             processed_count += 1
             with scan_progress_lock:
                 scan_progress["processed"] = processed_count
             continue
+        content_db = None
+        if _is_rf_candidate(target.band, st.signal_db, st.audio_dbfs):
+            with scan_progress_lock:
+                scan_progress["phase"] = "analysing audio"
+            captured_audio = radio.capture_audio(CONTENT_CAPTURE_S)
+            if scan_cancel.is_set():
+                logger.info("scan: cancelled during audio analysis")
+                break
+            current = radio.latest_status()
+            if current is None or current.frequency_hz != target.freq_hz:
+                skipped_mismatch += 1
+                logger.debug(
+                    "scan: skipped %d Hz - retuned during audio analysis",
+                    target.freq_hz,
+                )
+                processed_count += 1
+                with scan_progress_lock:
+                    scan_progress["processed"] = processed_count
+                continue
+            content_db = audio_content_db(
+                captured_audio,
+                FM_AUDIO_BW_HZ if target.band == "FM" else AM_AUDIO_BW_HZ,
+            )
         entry = {
             "signal_db": st.signal_db,
             "noise_dbfs": st.noise_dbfs,
             "audio_dbfs": st.audio_dbfs,
-            "viable": _is_viable(target.band, st.signal_db, st.audio_dbfs),
+            "content_db": content_db,
+            "viable": _is_viable(target.band, st.signal_db, st.audio_dbfs, content_db),
             "measured_at": time.time(),
         }
         signal_cache[target.freq_hz] = entry
         _persist_signal(target.freq_hz, entry)
         results.append({"freq_hz": target.freq_hz, **entry})
         logger.debug(
-            "scan: %d Hz signal=%d dB noise=%d dBFS audio=%d dBFS",
+            "scan: %d Hz signal=%d dB noise=%d dBFS audio=%d dBFS content=%s dB",
             target.freq_hz,
             st.signal_db,
             st.noise_dbfs,
             st.audio_dbfs,
+            content_db,
         )
         processed_count += 1
         with scan_progress_lock:
@@ -463,8 +524,11 @@ def scan(req: ScanRequest) -> dict:
         )
     logger.info(
         "scan: done - %d measured, %d duplicate, %d mismatch, %.1fs elapsed, cancelled=%s",
-        len(results), skipped_duplicate, skipped_mismatch,
-        time.monotonic() - started_at, scan_cancel.is_set(),
+        len(results),
+        skipped_duplicate,
+        skipped_mismatch,
+        time.monotonic() - started_at,
+        scan_cancel.is_set(),
     )
     return {
         "scanned": len(results),

@@ -299,7 +299,11 @@ function showScanProgress(status, completedBeforeBatch, overallTotal) {
   const percent = overallTotal > 0 ? Math.round(processed * 100 / overallTotal) : 0;
   const elapsed = scanStartedAt === null ? 0 : (performance.now() - scanStartedAt) / 1000;
   const eta = processed > 0 ? elapsed * (overallTotal - processed) / processed : null;
-  const phase = status.phase === 'sampling' ? 'Sampling' : status.phase === 'tuning' ? 'Tuning' : 'Preparing';
+  const phase = status.phase === 'sampling'
+    ? 'Sampling'
+    : status.phase === 'tuning'
+      ? 'Tuning'
+      : status.phase === 'analysing audio' ? 'Analysing audio' : 'Preparing';
   const target = status.frequency_hz
     ? `${status.band || ''} ${fmtFreq(status.frequency_hz)}`.trim()
     : 'next target';
@@ -400,8 +404,11 @@ function rssiCell(s) {
   if (s.signal_db === null || s.signal_db === undefined) return '<span class="rssi-val">-</span>';
   const pct = Math.max(4, Math.min(100, s.signal_db * (100 / 30)));
   const weak = !isAudible(s);
+  const content = s.content_db === null || s.content_db === undefined
+    ? 'audio unchecked'
+    : s.content_db < 3 ? 'noise-like' : `${s.content_db} dB audio content`;
   return `<span class="rssi-bar${weak ? ' rssi-weak' : ''}"><span style="width:${pct}%"></span></span>` +
-    `<span class="rssi-val">+${s.signal_db} dB above noise</span>`;
+    `<span class="rssi-val">+${s.signal_db} dB RF · ${content}</span>`;
 }
 
 async function refresh() {

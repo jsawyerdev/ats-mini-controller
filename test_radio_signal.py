@@ -6,14 +6,19 @@ import numpy as np
 
 import radio_bridge
 from radio_bridge import (
+    AM_AUDIO_BW_HZ,
+    AUDIO_RATE,
     FM_CHANNEL_BW_HZ,
     IQ_SAMPLE_RATE,
     _audio_level_dbfs,
     _estimate_signal,
+    audio_content_db,
 )
 
 
-def _noise(rng: np.random.Generator, samples: int, amplitude: float = 0.01) -> np.ndarray:
+def _noise(
+    rng: np.random.Generator, samples: int, amplitude: float = 0.01
+) -> np.ndarray:
     return amplitude * (
         rng.standard_normal(samples) + 1j * rng.standard_normal(samples)
     ).astype(np.complex64)
@@ -21,8 +26,29 @@ def _noise(rng: np.random.Generator, samples: int, amplitude: float = 0.01) -> n
 
 def test_audio_level_distinguishes_silence_from_demodulated_audio() -> None:
     assert _audio_level_dbfs(np.zeros(1024, dtype=np.float32)) == -120
-    tone = np.sin(np.linspace(0, 20 * np.pi, 1024, endpoint=False)).astype(np.float32) * 0.1
+    tone = (
+        np.sin(np.linspace(0, 20 * np.pi, 1024, endpoint=False)).astype(np.float32)
+        * 0.1
+    )
     assert -24 <= _audio_level_dbfs(tone) <= -22
+
+
+def test_audio_content_rejects_stationary_noise_and_accepts_programme_structure() -> (
+    None
+):
+    rng = np.random.default_rng(20261022)
+    samples = AUDIO_RATE * 2
+    time_s = np.arange(samples) / AUDIO_RATE
+    noise = rng.standard_normal(samples).astype(np.float32)
+    programme = (
+        np.sin(2 * np.pi * 220 * time_s)
+        + 0.5 * np.sin(2 * np.pi * 880 * time_s)
+        + 0.25 * np.sin(2 * np.pi * 1760 * time_s)
+    ).astype(np.float32)
+
+    assert audio_content_db(np.zeros(samples, dtype=np.float32), AM_AUDIO_BW_HZ) == 0
+    assert audio_content_db(noise, AM_AUDIO_BW_HZ) < 3
+    assert audio_content_db(programme, AM_AUDIO_BW_HZ) >= 3
 
 
 def test_failed_direct_sampling_switch_reopens_device(monkeypatch) -> None:

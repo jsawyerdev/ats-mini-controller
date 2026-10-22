@@ -9,10 +9,9 @@ FM broadcast (88-108 MHz) is within the R820T tuner's normal PLL range
 are both below that floor, so those bands are received via the RTL2832U's
 direct-sampling ADC input instead of the normal tuner path. Direct sampling
 is a standard RTL2832U capability (confirmed working on this dongle: it
-enables and tunes without error), but whether a given board's PCB actually
-routes that pin to a usable antenna path with adequate sensitivity varies -
-AM/SW reception quality on this specific dongle is unverified until tested
-against a real antenna and a known signal.
+enables and tunes without error), but whether this generic board's external
+antenna connector is electrically routed to the selected ADC input with
+adequate sensitivity remains unverified.
 
 Author: James Sawyer / JSLabs - https://www.jamessawyer.co.uk/ | https://labs.jamessawyer.co.uk/
 """
@@ -28,7 +27,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from rtlsdr import RtlSdr
-from scipy.signal import butter, sosfilt, sosfilt_zi
+from scipy.signal import butter, sosfilt, sosfilt_zi, welch
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +46,9 @@ DIRECT_SAMPLING_MODE = 2  # Q-branch; the commonly-wired input on most boards
 # the comment in RtlSdrBridge.__init__.
 DEFAULT_GAIN_DB = 40.2
 
-CW_TONE_LOWPASS_HZ = 2_000  # keeps cw_decoder's 300-1200Hz search band, rejects the rest
+CW_TONE_LOWPASS_HZ = (
+    2_000  # keeps cw_decoder's 300-1200Hz search band, rejects the rest
+)
 AM_AUDIO_BW_HZ = 5_000
 FM_AUDIO_BW_HZ = 15_000
 
@@ -93,7 +94,9 @@ class _AudioBus:
     live websocket listeners). Unlike the old hardware passthrough, none of
     these need exclusive access - it's all just reads of the same stream."""
 
-    def __init__(self, rate: int = AUDIO_RATE, history_s: float = _AUDIO_HISTORY_S) -> None:
+    def __init__(
+        self, rate: int = AUDIO_RATE, history_s: float = _AUDIO_HISTORY_S
+    ) -> None:
         self._rate = rate
         self._max_samples = int(history_s * rate)
         self._chunks: deque[np.ndarray] = deque()
@@ -187,6 +190,32 @@ def _audio_level_dbfs(audio: np.ndarray) -> int:
     return round(np.clip(20 * np.log10(max(rms, 1e-6)), -120, 0))
 
 
+def audio_content_db(audio: np.ndarray, bandwidth_hz: int) -> int:
+    """Return spectral structure above flat noise, independent of audio gain.
+
+    Welch averaging is essential here. A single short periodogram gives white
+    noise an apparently uneven spectrum and previously produced false content
+    scores. At least one second of audio makes stationary broadband hiss nearly
+    flat while speech, music, and tones retain concentrated spectral energy.
+    """
+    if audio.size < AUDIO_RATE or float(np.max(np.abs(audio))) < 1e-6:
+        return 0
+    segment_samples = min(8192, audio.size)
+    frequencies, power = welch(
+        audio,
+        fs=AUDIO_RATE,
+        nperseg=segment_samples,
+        noverlap=segment_samples // 2,
+    )
+    power = power[(frequencies >= 80) & (frequencies <= bandwidth_hz)]
+    arithmetic_mean = float(np.mean(power))
+    if power.size == 0 or arithmetic_mean <= 1e-20:
+        return 0
+    floor = max(arithmetic_mean * 1e-12, 1e-24)
+    geometric_mean = float(np.exp(np.mean(np.log(np.maximum(power, floor)))))
+    return round(np.clip(-10 * np.log10(geometric_mean / arithmetic_mean), 0, 60))
+
+
 def _decimate_lowpass(
     x: np.ndarray, sos: np.ndarray, zi: np.ndarray | None
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -215,8 +244,10 @@ def _demod_am(iq: np.ndarray, zi: np.ndarray | None) -> tuple[np.ndarray, np.nda
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug(
             "am demod: iq |mean|=%.6g iq_max=%.6g env_std=%.6g decimated_peak=%.6g",
-            float(np.mean(np.abs(iq))), float(np.max(np.abs(iq))),
-            float(np.std(envelope)), peak,
+            float(np.mean(np.abs(iq))),
+            float(np.max(np.abs(iq))),
+            float(np.std(envelope)),
+            peak,
         )
     # AM/SW go through direct sampling (see module docstring), which
     # bypasses the R820T tuner - and its gain stage - entirely, so these
@@ -243,7 +274,9 @@ def _demod_fm(
     return audio, iq[-1], zf
 
 
-def _demod_cw_tone(iq: np.ndarray, zi: np.ndarray | None) -> tuple[np.ndarray, np.ndarray]:
+def _demod_cw_tone(
+    iq: np.ndarray, zi: np.ndarray | None
+) -> tuple[np.ndarray, np.ndarray]:
     """tune_cw() physically tunes tone_hz off the carrier, so the keyed
     carrier beats at exactly that offset in our own baseband - a lowpass
     isolates it from everything else in the capture, and the real part is
@@ -287,12 +320,16 @@ class RtlSdrBridge:
         self._audio_bus = _AudioBus()
 
         self._subscribers_lock = threading.Lock()
-        self._subscribers: dict[int, tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = {}
+        self._subscribers: dict[
+            int, tuple[asyncio.AbstractEventLoop, asyncio.Queue]
+        ] = {}
         self._next_subscriber_id = 0
 
         self._stop = threading.Event()
         self._retune = threading.Event()
-        self._worker = threading.Thread(target=self._run, daemon=True, name="rtlsdr-demod")
+        self._worker = threading.Thread(
+            target=self._run, daemon=True, name="rtlsdr-demod"
+        )
         self._worker.start()
 
     def close(self) -> None:
@@ -306,13 +343,17 @@ class RtlSdrBridge:
         needs_direct = frequency_hz < DIRECT_SAMPLING_THRESHOLD_HZ
         if needs_direct != self._direct_sampling_active:
             try:
-                self._sdr.set_direct_sampling(DIRECT_SAMPLING_MODE if needs_direct else 0)
+                self._sdr.set_direct_sampling(
+                    DIRECT_SAMPLING_MODE if needs_direct else 0
+                )
             except Exception:  # noqa: BLE001 -- librtlsdr exposes backend-specific errors
                 # Some librtlsdr/R820T combinations apply the mode change but
                 # return LIBUSB_ERROR_IO while reinitialising the tuner. Reopen
                 # the device into a known state instead of retrying forever
                 # with a dead audio stream.
-                logger.warning("Reopening RTL-SDR after direct-sampling mode switch failed")
+                logger.warning(
+                    "Reopening RTL-SDR after direct-sampling mode switch failed"
+                )
                 self._sdr.close()
                 self._sdr = RtlSdr(self._device_index)
                 self._sdr.sample_rate = IQ_SAMPLE_RATE
@@ -321,7 +362,9 @@ class RtlSdrBridge:
                     self._sdr.set_direct_sampling(DIRECT_SAMPLING_MODE)
             self._direct_sampling_active = needs_direct
             logger.debug(
-                "direct sampling %s at %d Hz", "enabled" if needs_direct else "disabled", frequency_hz
+                "direct sampling %s at %d Hz",
+                "enabled" if needs_direct else "disabled",
+                frequency_hz,
             )
         self._sdr.center_freq = frequency_hz
 
@@ -338,7 +381,11 @@ class RtlSdrBridge:
         return True
 
     def tune_cw(
-        self, carrier_hz: int, band_label: str = "", mode: str = "USB", tone_hz: int = 700
+        self,
+        carrier_hz: int,
+        band_label: str = "",
+        mode: str = "USB",
+        tone_hz: int = 700,
     ) -> bool:
         """Tune tone_hz off the carrier so a keyed CW signal beats at an
         audible pitch - the RF-vs-image sideband distinction USB/LSB
@@ -353,7 +400,10 @@ class RtlSdrBridge:
         self._retune.set()
         logger.debug(
             "tune_cw: carrier=%d Hz offset=%+d -> %d Hz (%s)",
-            carrier_hz, offset, carrier_hz + offset, band_label,
+            carrier_hz,
+            offset,
+            carrier_hz + offset,
+            band_label,
         )
         return True
 
@@ -429,14 +479,18 @@ class RtlSdrBridge:
                         freq, band, mode = self._frequency_hz, self._band, self._mode
                     self._apply_frequency(freq)
                     prev_fm_sample = None
-                    filter_zi = None  # a new frequency isn't a continuation of the old stream
+                    filter_zi = (
+                        None  # a new frequency isn't a continuation of the old stream
+                    )
                     signal_history.clear()
                     self._retune.clear()
 
                 iq = self._sdr.read_samples(CHUNK_IQ_SAMPLES)
 
                 if mode == "FM":
-                    audio, prev_fm_sample, filter_zi = _demod_fm(iq, prev_fm_sample, filter_zi)
+                    audio, prev_fm_sample, filter_zi = _demod_fm(
+                        iq, prev_fm_sample, filter_zi
+                    )
                     metrics = _estimate_signal(iq, FM_CHANNEL_BW_HZ)
                 elif mode == "CW":
                     audio, filter_zi = _demod_cw_tone(iq, filter_zi)
@@ -447,9 +501,15 @@ class RtlSdrBridge:
 
                 audio_dbfs = _audio_level_dbfs(audio)
                 signal_history.append((*metrics, audio_dbfs))
-                signal_db = round(float(np.median([item[0] for item in signal_history])))
-                noise_dbfs = round(float(np.median([item[1] for item in signal_history])))
-                audio_dbfs = round(float(np.median([item[2] for item in signal_history])))
+                signal_db = round(
+                    float(np.median([item[0] for item in signal_history]))
+                )
+                noise_dbfs = round(
+                    float(np.median([item[1] for item in signal_history]))
+                )
+                audio_dbfs = round(
+                    float(np.median([item[2] for item in signal_history]))
+                )
 
                 with self._state_lock:
                     volume = self._volume
