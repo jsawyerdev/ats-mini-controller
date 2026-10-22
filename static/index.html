@@ -155,6 +155,8 @@
   #cw-status { font-size: 13px; color: var(--text-dim); }
   #cw-status.mode-locked { color: var(--green); }
   #cw-status.mode-scanning { color: var(--amber); }
+  #cw-help { padding: 10px 18px; color: var(--text-dim); background: var(--panel); border-bottom: 1px solid var(--navy-lt); font-size: 12px; }
+  #cw-empty { padding: 18px; color: var(--text-dim); font-size: 12px; }
 
   #cw-inprogress {
     margin: 16px 18px; padding: 16px 20px; background: var(--panel); border: 1px solid var(--orange-dim);
@@ -252,17 +254,19 @@
 
 <div id="cw-view" class="tab-view" hidden>
   <div id="cw-toolbar">
-    <button id="cw-monitor-toggle">Start CW Monitor</button>
+    <button id="cw-monitor-toggle">Scan CW frequencies</button>
     <span id="cw-status">Idle</span>
     <button id="cw-listen-btn">One-shot: listen here</button>
     <button id="cw-self-test-btn">Test decoder</button>
   </div>
+  <div id="cw-help"><strong>CW means Continuous Wave:</strong> Morse code keys a steady carrier on and off. This scan checks dedicated CW beacon and calling frequencies; the station-catalogue scan checks broadcast channels.</div>
   <div id="cw-inprogress" hidden>
     <span class="cw-freq"></span>
     <span class="cw-text"></span>
     <span class="cw-cursor">&#9608;</span>
     <span class="cw-quality"></span>
   </div>
+  <div id="cw-empty">No Morse decoded yet. Detected messages will appear here with frequency, speed, tone, and decoder confidence.</div>
   <div id="cw-log"></div>
 </div>
 <script>
@@ -293,6 +297,7 @@ const cwMonitorToggleBtn = document.getElementById('cw-monitor-toggle');
 const cwStatusEl = document.getElementById('cw-status');
 const cwInProgressEl = document.getElementById('cw-inprogress');
 const cwLogEl = document.getElementById('cw-log');
+const cwEmptyEl = document.getElementById('cw-empty');
 const audioToggleBtn = document.getElementById('audio-toggle');
 const gainSelectEl = document.getElementById('gain-select');
 const calibrateBtn = document.getElementById('calibrate-btn');
@@ -434,7 +439,7 @@ function rssiCell(s) {
     ? 'audio unchecked'
     : s.content_db < 3 ? 'noise-like' : `${s.content_db} dB audio content`;
   const mirror = s.mirror_freq_hz
-    ? ` · possible image ${fmtFreq(s.mirror_freq_hz)}${s.mirror_signal_db === null ? '' : ` (+${s.mirror_signal_db} dB)`}`
+    ? ` · <span title="Direct-sampling mirror alias, not a transmitted picture">possible mirror alias ${fmtFreq(s.mirror_freq_hz)}${s.mirror_signal_db === null ? '' : ` (+${s.mirror_signal_db} dB)`}</span>`
     : '';
   return `<span class="rssi-bar${weak ? ' rssi-weak' : ''}"><span style="width:${pct}%"></span></span>` +
     `<span class="rssi-val">+${s.signal_db} dB RF · ${content}${mirror}</span>`;
@@ -760,6 +765,7 @@ function addCwLogEntry(e) {
   div.innerHTML = `<div class="cw-meta">${fmtClock(e.started_at)} &middot; ${freqLabel} ${wpmLabel ? '&middot; ' + wpmLabel : ''}${toneLabel}</div>` +
     `<div class="cw-body">${e.text || '(no readable text)'} <span style="color:var(--text-dim);font-size:11px;">${e.morse || ''}${confidenceLabel}</span></div>`;
   cwLogEl.prepend(div);
+  cwEmptyEl.hidden = true;
 }
 
 cwSelfTestBtn.addEventListener('click', async () => {
@@ -787,11 +793,13 @@ async function refreshCwMonitorState() {
   es.onmessage = (evt) => {
     const s = JSON.parse(evt.data);
     cwMonitorRunning = s.running;
-    cwMonitorToggleBtn.textContent = s.running ? 'Stop CW Monitor' : 'Start CW Monitor';
+    cwMonitorToggleBtn.textContent = s.running ? 'Stop CW scan' : 'Scan CW frequencies';
 
     cwStatusEl.className = s.mode === 'locked' ? 'mode-locked' : s.mode === 'scanning' ? 'mode-scanning' : '';
     if (s.mode === 'scanning') {
-      cwStatusEl.textContent = `Scanning ${s.current_freq_hz ? fmtFreq(s.current_freq_hz) : '...'}`;
+      const progress = s.target_total ? ` · target ${s.target_index}/${s.target_total} · cycle ${s.cycle}` : '';
+      const detections = s.log ? s.log.length : 0;
+      cwStatusEl.textContent = `Scanning ${s.current_freq_hz ? fmtFreq(s.current_freq_hz) : '...'}${progress} · ${detections} decoded`;
     } else if (s.mode === 'locked') {
       cwStatusEl.textContent = `Locked on ${fmtFreq(s.current_freq_hz)} — decoding`;
     } else {
@@ -815,6 +823,7 @@ async function refreshCwMonitorState() {
       cwLogSeen = s.log.length;
     } else if (s.log && s.log.length < cwLogSeen) {
       cwLogEl.innerHTML = '';
+      cwEmptyEl.hidden = false;
       cwLogSeen = 0;
       for (const e of s.log) addCwLogEntry(e);
       cwLogSeen = s.log.length;

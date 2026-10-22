@@ -778,12 +778,15 @@ _DEFAULT_CW_TARGETS = [
     # DK0WCY: transmits real CW during most of every 10-minute cycle (only
     # RTTY/PSK31 at :10/:50), not a brief shared slot - far higher duty
     # cycle than the beacon network below, so tried first.
-    CwTarget(freq_hz=10144000, band_label="30M", mode="LSB"),
+    CwTarget(freq_hz=10144000, band_label="30M", mode="USB"),
     # NCDXF/IARU beacon network: 18 stations round-robin their callsign in
     # CW every 10s (full cycle ~3 min), continuously, specifically so
     # anyone can test reception - far higher odds of a real decode than
     # waiting for unpredictable ham QSO traffic on the calling frequencies.
     CwTarget(freq_hz=14100000, band_label="20M", mode="USB"),
+    CwTarget(freq_hz=18110000, band_label="17M", mode="USB"),
+    CwTarget(freq_hz=21150000, band_label="15M", mode="USB"),
+    CwTarget(freq_hz=24930000, band_label="12M", mode="USB"),
     CwTarget(freq_hz=28200000, band_label="10M", mode="USB"),
     # GB3RAL: a single station transmitting continuously (not round-robin),
     # so a higher duty cycle than the NCDXF network on the same band.
@@ -834,6 +837,9 @@ def _monitor_state_dict(state) -> dict:
         "running": state.running,
         "mode": state.mode,
         "current_freq_hz": state.current_freq_hz,
+        "target_index": state.target_index,
+        "target_total": state.target_total,
+        "cycle": state.cycle,
         "in_progress_text": state.in_progress_text,
         "in_progress_morse": state.in_progress_morse,
         "in_progress_wpm": state.in_progress_wpm,

@@ -59,6 +59,9 @@ def test_cw_monitor_state_exposes_live_and_completed_quality() -> None:
         running=True,
         mode="locked",
         current_freq_hz=14_100_000,
+        target_index=2,
+        target_total=9,
+        cycle=3,
         in_progress_text="CS3B",
         in_progress_morse="-.-. ... ...-- -...",
         in_progress_wpm=22.0,
@@ -84,8 +87,17 @@ def test_cw_monitor_state_exposes_live_and_completed_quality() -> None:
 
     assert result["in_progress_tone_hz"] == 700.0
     assert result["in_progress_confidence"] == 0.91
+    assert result["target_index"] == 2
+    assert result["target_total"] == 9
+    assert result["cycle"] == 3
     assert result["log"][0]["tone_hz"] == 700.0
     assert result["log"][0]["confidence"] == 0.91
+
+
+def test_default_cw_targets_cover_all_international_beacon_bands() -> None:
+    frequencies = {target.freq_hz for target in app._DEFAULT_CW_TARGETS}
+
+    assert {14_100_000, 18_110_000, 21_150_000, 24_930_000, 28_200_000} <= frequencies
 
 
 def test_health_reports_radio_readiness() -> None:

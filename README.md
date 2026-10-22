@@ -126,7 +126,16 @@ second RTL-SDR would be required for true simultaneous scan-and-listen operation
 
 ### CW Monitor
 
-The CW Monitor tab runs a background scan → lock → decode → release loop: it cycles a small set of known CW-heavy frequencies (propagation beacons with high duty cycles, ham calling frequencies), and the moment it detects real on/off keying it locks onto that frequency and decodes continuously, streaming the text, raw Morse, tone frequency, speed, and confidence live. When the signal goes quiet or fades below detection, that decode is pushed to the scrolling log with the same quality evidence plus its timestamp and frequency, and scanning resumes.
+The CW Monitor tab runs a background scan → lock → decode → release loop: it cycles nine known CW-heavy frequencies, including all five NCDXF/IARU beacon bands plus high-duty-cycle and amateur calling frequencies. The UI shows the current frequency, target position, completed cycle, and decode count. When it detects real on/off keying it locks and streams the text, raw Morse, tone frequency, speed, and confidence live. When the signal goes quiet or fades below detection, that decode is pushed to the scrolling log with the same quality evidence plus its timestamp and frequency, and scanning resumes.
+
+The broadcast **Scan all stations** action and **Scan CW frequencies** are deliberately separate.
+The catalogue contains scheduled broadcast channels, not every frequency where amateur Morse may
+appear, and decoding every catalogue frequency as CW would take hours while producing misleading
+results from speech and music.
+
+“Possible mirror alias” is a direct-sampling artefact at the complementary frequency, not a
+transmitted image or picture. SSTV and radiofax image decoding are not currently implemented;
+they require mode-specific demodulation and synchronisation from a confirmed image transmission.
 
 **Test decoder** runs a deterministic synthetic `SOS SOS` signal through the same production
 decoder and shows the text, Morse, speed, and confidence in the log. The result is labelled
@@ -181,6 +190,17 @@ served over the unauthenticated web interface; retrieve them from the Pi filesys
 ## Changelog
 
 ### Unreleased
+
+### 2.11.0 - 2026-10-22
+
+#### Changed
+
+- Renamed the ambiguous “possible image” station warning to “possible mirror alias” and explain
+  that it is a direct-sampling artefact, not picture content.
+- Expanded CW monitoring to all five NCDXF/IARU beacon bands plus four high-duty-cycle or calling
+  frequencies, with current target, cycle, and decode-count progress in the UI.
+- Clarified the separate purposes of the complete broadcast-catalogue scan and the targeted CW
+  scan, and documented that SSTV/radiofax decoding is not yet implemented.
 
 ### 2.10.0 - 2026-10-22
 

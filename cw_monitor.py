@@ -63,6 +63,9 @@ class MonitorState:
     running: bool = False
     mode: str = "idle"  # idle | scanning | locked
     current_freq_hz: int | None = None
+    target_index: int = 0
+    target_total: int = 0
+    cycle: int = 0
     in_progress_text: str = ""
     in_progress_morse: str = ""
     in_progress_wpm: float | None = None
@@ -97,6 +100,9 @@ class CwMonitor:
                 running=self._state.running,
                 mode=self._state.mode,
                 current_freq_hz=self._state.current_freq_hz,
+                target_index=self._state.target_index,
+                target_total=self._state.target_total,
+                cycle=self._state.cycle,
                 in_progress_text=self._state.in_progress_text,
                 in_progress_morse=self._state.in_progress_morse,
                 in_progress_wpm=self._state.in_progress_wpm,
@@ -121,6 +127,9 @@ class CwMonitor:
         self._update(
             running=True,
             mode="scanning",
+            target_index=0,
+            target_total=len(self._candidates),
+            cycle=1,
             in_progress_text="",
             in_progress_morse="",
             in_progress_wpm=None,
@@ -191,10 +200,15 @@ class CwMonitor:
         try:
             while not self._should_stop():
                 target = self._candidates[candidate_idx % len(self._candidates)]
+                target_index = candidate_idx % len(self._candidates) + 1
+                cycle = candidate_idx // len(self._candidates) + 1
                 candidate_idx += 1
                 self._update(
                     mode="scanning",
                     current_freq_hz=target.freq_hz,
+                    target_index=target_index,
+                    target_total=len(self._candidates),
+                    cycle=cycle,
                     in_progress_text="",
                     in_progress_morse="",
                     in_progress_wpm=None,
