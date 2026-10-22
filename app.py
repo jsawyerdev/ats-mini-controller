@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "data" / "stations.db"
 SIGNAL_DB_PATH = Path(__file__).parent / "data" / "signal_cache.db"
-APP_VERSION = "2.0.1"
+APP_VERSION = "2.1.0"
 
 
 @asynccontextmanager
@@ -168,25 +168,43 @@ def list_stations(
     band: str = "",
     limit: int = Query(default=500, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
+    sort: Literal["frequency", "band", "name", "country", "language", "signal"] = "frequency",
+    order: Literal["asc", "desc"] = "asc",
 ) -> dict:
     conn = sqlite3.connect(DB_PATH)
     try:
         conn.row_factory = sqlite3.Row
+        conn.execute("ATTACH DATABASE ? AS signal_store", (str(SIGNAL_DB_PATH),))
         clauses: list[str] = []
         params: list[object] = []
         if q:
-            clauses.append("(name LIKE ? OR country LIKE ? OR language LIKE ?)")
+            clauses.append("(s.name LIKE ? OR s.country LIKE ? OR s.language LIKE ?)")
             like = f"%{q}%"
             params.extend([like, like, like])
         if band:
-            clauses.append("band = ?")
+            clauses.append("s.band = ?")
             params.append(band)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         total = conn.execute(
-            f"SELECT COUNT(*) FROM stations {where}", params
+            f"SELECT COUNT(*) FROM stations s {where}", params
         ).fetchone()[0]
+        direction = "ASC" if order == "asc" else "DESC"
+        sort_columns = {
+            "frequency": "s.freq_hz",
+            "band": "s.band COLLATE NOCASE",
+            "name": "s.name COLLATE NOCASE",
+            "country": "s.country COLLATE NOCASE",
+            "language": "s.language COLLATE NOCASE",
+            "signal": "m.signal_db",
+        }
+        sort_column = sort_columns[sort]
+        missing_signal_last = "m.signal_db IS NULL ASC, " if sort == "signal" else ""
         rows = conn.execute(
-            f"SELECT * FROM stations {where} ORDER BY freq_hz LIMIT ? OFFSET ?",
+            "SELECT s.*, m.signal_db, m.noise_dbfs, m.measured_at "
+            "FROM stations s LEFT JOIN signal_store.signal_measurements m "
+            "ON m.freq_hz = s.freq_hz "
+            f"{where} ORDER BY {missing_signal_last}{sort_column} {direction}, "
+            "s.freq_hz ASC, s.name COLLATE NOCASE ASC LIMIT ? OFFSET ?",
             (*params, limit, offset),
         ).fetchall()
     finally:
@@ -194,10 +212,6 @@ def list_stations(
     out = []
     for r in rows:
         d = dict(r)
-        cached = signal_cache.get(d["freq_hz"])
-        d["signal_db"] = cached["signal_db"] if cached else None
-        d["noise_dbfs"] = cached["noise_dbfs"] if cached else None
-        d["measured_at"] = cached["measured_at"] if cached else None
         out.append(d)
     return {"total": total, "offset": offset, "returned": len(out), "stations": out}
 

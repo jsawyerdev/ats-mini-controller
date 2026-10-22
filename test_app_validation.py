@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 from fastapi import Response
 from pydantic import BaseModel, ValidationError
 
@@ -49,3 +51,40 @@ def test_health_reports_radio_readiness() -> None:
         assert response.status_code == 200
     finally:
         app.bridge = original_bridge
+
+
+def test_station_signal_sort_is_numeric_global_and_unscanned_last(tmp_path) -> None:
+    stations_path = tmp_path / "stations.db"
+    signal_path = tmp_path / "signal.db"
+    with sqlite3.connect(stations_path) as conn:
+        conn.execute(
+            "CREATE TABLE stations (freq_hz INTEGER, band TEXT, name TEXT, country TEXT, "
+            "mode TEXT, time_range TEXT, days_code TEXT, language TEXT, source TEXT)"
+        )
+        conn.executemany(
+            "INSERT INTO stations VALUES (?, 'FM', ?, 'GB', 'FM', '', '', 'English', 'test')",
+            [(90_000_000, "Unscanned"), (91_000_000, "Weak"), (92_000_000, "Strong")],
+        )
+    with sqlite3.connect(signal_path) as conn:
+        conn.execute(
+            "CREATE TABLE signal_measurements (freq_hz INTEGER PRIMARY KEY, signal_db INTEGER, "
+            "noise_dbfs INTEGER, measured_at REAL)"
+        )
+        conn.executemany(
+            "INSERT INTO signal_measurements VALUES (?, ?, -50, 1.0)",
+            [(91_000_000, 7), (92_000_000, 21)],
+        )
+
+    original_db_path = app.DB_PATH
+    original_signal_path = app.SIGNAL_DB_PATH
+    try:
+        app.DB_PATH = stations_path
+        app.SIGNAL_DB_PATH = signal_path
+        descending = app.list_stations("", "", 10, 0, "signal", "desc")["stations"]
+        ascending = app.list_stations("", "", 10, 0, "signal", "asc")["stations"]
+    finally:
+        app.DB_PATH = original_db_path
+        app.SIGNAL_DB_PATH = original_signal_path
+
+    assert [station["name"] for station in descending] == ["Strong", "Weak", "Unscanned"]
+    assert [station["name"] for station in ascending] == ["Weak", "Strong", "Unscanned"]

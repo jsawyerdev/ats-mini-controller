@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.0 - 2026-10-22
+
+### Added
+
+- Added server-side sorting for frequency, band, name, country, language, and signal columns.
+  Signal sorting ranks all filtered scanned stations numerically and always leaves unscanned
+  stations last.
+
 ## 2.0.1 - 2026-10-22
 
 ### Fixed

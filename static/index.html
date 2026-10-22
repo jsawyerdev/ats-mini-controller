@@ -94,6 +94,12 @@
     padding: 8px 12px;
     border-bottom: 2px solid var(--orange-dim);
   }
+  thead th.sortable { cursor: pointer; user-select: none; }
+  thead th.sortable:hover { color: var(--text); }
+  thead th.sortable:focus-visible { outline: 1px solid var(--orange); outline-offset: -2px; }
+  thead th.sortable::after { content: ' ↕'; color: var(--text-dim); }
+  thead th.sortable[aria-sort="ascending"]::after { content: ' ↑'; color: var(--orange); }
+  thead th.sortable[aria-sort="descending"]::after { content: ' ↓'; color: var(--orange); }
   tbody td { padding: 7px 12px; border-bottom: 1px solid var(--navy); font-size: 13px; }
   tbody tr:hover { background: var(--navy-lt); cursor: pointer; }
   tbody tr.active-now { background: rgba(255, 138, 30, 0.08); }
@@ -192,7 +198,7 @@
     <span id="seek-result" style="font-size:12px;color:var(--text-dim);"></span>
   </div>
   <table>
-    <thead><tr><th></th><th>Freq</th><th>Band</th><th>Name</th><th>Country</th><th>Language</th><th>On air (local)</th><th>Signal</th></tr></thead>
+    <thead><tr><th></th><th class="sortable" data-sort="frequency" tabindex="0" aria-sort="ascending">Freq</th><th class="sortable" data-sort="band" tabindex="0" aria-sort="none">Band</th><th class="sortable" data-sort="name" tabindex="0" aria-sort="none">Name</th><th class="sortable" data-sort="country" tabindex="0" aria-sort="none">Country</th><th class="sortable" data-sort="language" tabindex="0" aria-sort="none">Language</th><th>On air (local)</th><th class="sortable" data-sort="signal" tabindex="0" aria-sort="none">Signal</th></tr></thead>
     <tbody id="rows"></tbody>
   </table>
   <div id="pager">
@@ -242,6 +248,8 @@ let currentStations = [];
 let tuning = false;
 let pageOffset = 0;
 let pageTotal = 0;
+let sortBy = 'frequency';
+let sortOrder = 'asc';
 
 // Six dB means roughly four times the nearby noise power. This avoids
 // classifying broadband noise as a station merely because gain is high.
@@ -318,6 +326,7 @@ function rssiCell(s) {
 async function refresh() {
   const params = new URLSearchParams({
     q: qEl.value, band: bandEl.value, limit: PAGE_SIZE, offset: pageOffset,
+    sort: sortBy, order: sortOrder,
   });
   const res = await fetch('/api/stations?' + params);
   const data = await res.json();
@@ -329,6 +338,11 @@ async function refresh() {
   pageLabelEl.textContent = `Page ${Math.floor(pageOffset / PAGE_SIZE) + 1} of ${Math.max(1, Math.ceil(data.total / PAGE_SIZE))}`;
   pagePrevEl.disabled = pageOffset === 0;
   pageNextEl.disabled = to >= data.total;
+  document.querySelectorAll('th.sortable').forEach(th => {
+    th.setAttribute('aria-sort', th.dataset.sort === sortBy
+      ? (sortOrder === 'asc' ? 'ascending' : 'descending')
+      : 'none');
+  });
   render();
 }
 
@@ -588,6 +602,25 @@ qEl.addEventListener('input', () => { clearTimeout(window._t); window._t = setTi
 bandEl.addEventListener('change', resetToFirstPage);
 activeOnlyEl.addEventListener('change', render);
 audibleOnlyEl.addEventListener('change', render);
+function changeSort(th) {
+  const selected = th.dataset.sort;
+  if (sortBy === selected) {
+    sortOrder = sortOrder === 'asc' ? 'desc' : 'asc';
+  } else {
+    sortBy = selected;
+    sortOrder = selected === 'signal' ? 'desc' : 'asc';
+  }
+  resetToFirstPage();
+}
+document.querySelectorAll('th.sortable').forEach(th => {
+  th.addEventListener('click', () => changeSort(th));
+  th.addEventListener('keydown', event => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      changeSort(th);
+    }
+  });
+});
 scanBtn.addEventListener('click', scanVisible);
 seekBtn.addEventListener('click', findNextStrongest);
 volUpEl.addEventListener('click', () => fetch('/api/volume/up', { method: 'POST' }));
