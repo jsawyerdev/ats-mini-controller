@@ -162,6 +162,7 @@
   }
   #cw-inprogress .cw-freq { color: var(--orange); font-size: 13px; display: block; margin-bottom: 6px; letter-spacing: 0.05em; }
   #cw-inprogress .cw-text { color: var(--amber); text-shadow: 0 0 8px rgba(255,179,71,0.5); }
+  #cw-inprogress .cw-quality { color: var(--text-dim); font-size: 11px; display: block; margin-top: 6px; }
   #cw-inprogress .cw-cursor { color: var(--amber); animation: blink 1s step-start infinite; }
   @keyframes blink { 50% { opacity: 0; } }
 
@@ -260,6 +261,7 @@
     <span class="cw-freq"></span>
     <span class="cw-text"></span>
     <span class="cw-cursor">&#9608;</span>
+    <span class="cw-quality"></span>
   </div>
   <div id="cw-log"></div>
 </div>
@@ -753,8 +755,9 @@ function addCwLogEntry(e) {
   div.className = e.synthetic ? 'cw-entry synthetic' : 'cw-entry';
   const freqLabel = e.synthetic ? 'synthetic self-test · not received over air' : e.freq_hz ? fmtFreq(e.freq_hz) : 'manual';
   const wpmLabel = e.wpm ? `${e.wpm.toFixed(0)} WPM` : '';
-  const confidenceLabel = e.confidence === undefined ? '' : ` · ${Math.round(e.confidence * 100)}% confidence`;
-  div.innerHTML = `<div class="cw-meta">${fmtClock(e.started_at)} &middot; ${freqLabel} ${wpmLabel ? '&middot; ' + wpmLabel : ''}</div>` +
+  const toneLabel = e.tone_hz ? ` · ${e.tone_hz.toFixed(0)} Hz tone` : '';
+  const confidenceLabel = e.confidence === undefined ? '' : ` · ${Math.round(e.confidence * 100)}% decoder confidence`;
+  div.innerHTML = `<div class="cw-meta">${fmtClock(e.started_at)} &middot; ${freqLabel} ${wpmLabel ? '&middot; ' + wpmLabel : ''}${toneLabel}</div>` +
     `<div class="cw-body">${e.text || '(no readable text)'} <span style="color:var(--text-dim);font-size:11px;">${e.morse || ''}${confidenceLabel}</span></div>`;
   cwLogEl.prepend(div);
 }
@@ -799,6 +802,10 @@ async function refreshCwMonitorState() {
       cwInProgressEl.hidden = false;
       cwInProgressEl.querySelector('.cw-freq').textContent = fmtFreq(s.current_freq_hz) + ' — live';
       cwInProgressEl.querySelector('.cw-text').textContent = s.in_progress_text;
+      const liveWpm = s.in_progress_wpm ? `${s.in_progress_wpm.toFixed(0)} WPM · ` : '';
+      const liveTone = s.in_progress_tone_hz ? `${s.in_progress_tone_hz.toFixed(0)} Hz tone · ` : '';
+      cwInProgressEl.querySelector('.cw-quality').textContent =
+        `${liveWpm}${liveTone}${Math.round((s.in_progress_confidence || 0) * 100)}% decoder confidence`;
     } else {
       cwInProgressEl.hidden = true;
     }

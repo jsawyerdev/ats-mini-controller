@@ -126,11 +126,18 @@ second RTL-SDR would be required for true simultaneous scan-and-listen operation
 
 ### CW Monitor
 
-The CW Monitor tab runs a background scan → lock → decode → release loop: it cycles a small set of known CW-heavy frequencies (propagation beacons with high duty cycles, ham calling frequencies), and the moment it detects real on/off keying it locks onto that frequency and decodes continuously, streaming the text live. When the signal goes quiet or fades below detection, that decode is pushed to the scrolling log with a timestamp, frequency, and WPM estimate, and scanning resumes.
+The CW Monitor tab runs a background scan → lock → decode → release loop: it cycles a small set of known CW-heavy frequencies (propagation beacons with high duty cycles, ham calling frequencies), and the moment it detects real on/off keying it locks onto that frequency and decodes continuously, streaming the text, raw Morse, tone frequency, speed, and confidence live. When the signal goes quiet or fades below detection, that decode is pushed to the scrolling log with the same quality evidence plus its timestamp and frequency, and scanning resumes.
 
 **Test decoder** runs a deterministic synthetic `SOS SOS` signal through the same production
 decoder and shows the text, Morse, speed, and confidence in the log. The result is labelled
 synthetic and does not claim that Morse was received over the antenna.
+
+Decoder confidence measures timing regularity and recognised-symbol quality; it is not a
+calibrated probability of correctness. In a deterministic synthetic `SOS SOS` evaluation at the
+beacon network's 22 WPM, exact decoding succeeded in 29 of 30 cases from -5 to +20 dB SNR across
+350-1100 Hz tones, and 0 of 6 cases at -10 dB. Across 8-45 WPM the same matrix was 65 of 105 exact,
+with the current decoder unreliable at 30 WPM and above. Real over-air accuracy remains unmeasured
+until labelled IQ/audio captures are available.
 
 **One-shot: listen here** does a single ~4 second capture-and-decode on whatever frequency the radio is currently tuned to, without touching the tuning — useful to check a specific frequency you've navigated to manually from the Stations tab.
 
@@ -174,6 +181,15 @@ served over the unauthenticated web interface; retrieve them from the Pi filesys
 ## Changelog
 
 ### Unreleased
+
+### 2.10.0 - 2026-10-22
+
+#### Added
+
+- Show raw Morse, tone frequency, WPM, and heuristic decoder confidence while an over-air CW
+  signal is locked and in completed CW log entries.
+- Document the decoder's controlled synthetic accuracy separately from unmeasured over-air
+  accuracy.
 
 ### 2.9.0 - 2026-10-22
 

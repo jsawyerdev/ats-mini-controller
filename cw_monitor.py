@@ -54,6 +54,8 @@ class LogEntry:
     text: str
     morse: str
     wpm: float | None
+    tone_hz: float | None
+    confidence: float
 
 
 @dataclass
@@ -62,6 +64,10 @@ class MonitorState:
     mode: str = "idle"  # idle | scanning | locked
     current_freq_hz: int | None = None
     in_progress_text: str = ""
+    in_progress_morse: str = ""
+    in_progress_wpm: float | None = None
+    in_progress_tone_hz: float | None = None
+    in_progress_confidence: float = 0.0
     in_progress_started_at: float | None = None
     log: list[LogEntry] = field(default_factory=list)
     version: int = 0  # bumped on every change, for the SSE loop to diff against
@@ -92,6 +98,10 @@ class CwMonitor:
                 mode=self._state.mode,
                 current_freq_hz=self._state.current_freq_hz,
                 in_progress_text=self._state.in_progress_text,
+                in_progress_morse=self._state.in_progress_morse,
+                in_progress_wpm=self._state.in_progress_wpm,
+                in_progress_tone_hz=self._state.in_progress_tone_hz,
+                in_progress_confidence=self._state.in_progress_confidence,
                 in_progress_started_at=self._state.in_progress_started_at,
                 log=list(self._state.log),
                 version=self._state.version,
@@ -108,7 +118,16 @@ class CwMonitor:
             return
         self._stop_event.clear()
         self._manual_override.clear()
-        self._update(running=True, mode="scanning", log=[])
+        self._update(
+            running=True,
+            mode="scanning",
+            in_progress_text="",
+            in_progress_morse="",
+            in_progress_wpm=None,
+            in_progress_tone_hz=None,
+            in_progress_confidence=0.0,
+            log=[],
+        )
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -126,7 +145,14 @@ class CwMonitor:
                 logger.warning("CW monitor thread did not stop within 50s")
                 return  # don't report idle while it's still actually running
         self._update(
-            running=False, mode="idle", current_freq_hz=None, in_progress_text=""
+            running=False,
+            mode="idle",
+            current_freq_hz=None,
+            in_progress_text="",
+            in_progress_morse="",
+            in_progress_wpm=None,
+            in_progress_tone_hz=None,
+            in_progress_confidence=0.0,
         )
 
     def _record_chunk(self) -> np.ndarray:
@@ -144,12 +170,21 @@ class CwMonitor:
             text=result.text,
             morse=result.morse,
             wpm=result.wpm,
+            tone_hz=result.tone_hz,
+            confidence=result.confidence,
         )
         with self._state_lock:
             self._state.log.append(entry)
             if len(self._state.log) > 200:
                 self._state.log = self._state.log[-200:]
-        self._update(in_progress_text="", in_progress_started_at=None)
+        self._update(
+            in_progress_text="",
+            in_progress_morse="",
+            in_progress_wpm=None,
+            in_progress_tone_hz=None,
+            in_progress_confidence=0.0,
+            in_progress_started_at=None,
+        )
 
     def _run(self) -> None:
         candidate_idx = 0
@@ -157,7 +192,15 @@ class CwMonitor:
             while not self._should_stop():
                 target = self._candidates[candidate_idx % len(self._candidates)]
                 candidate_idx += 1
-                self._update(mode="scanning", current_freq_hz=target.freq_hz)
+                self._update(
+                    mode="scanning",
+                    current_freq_hz=target.freq_hz,
+                    in_progress_text="",
+                    in_progress_morse="",
+                    in_progress_wpm=None,
+                    in_progress_tone_hz=None,
+                    in_progress_confidence=0.0,
+                )
 
                 if not self._bridge.tune_cw(
                     target.freq_hz, target.band_label, target.mode
@@ -192,7 +235,13 @@ class CwMonitor:
         while not self._should_stop():
             if len(buffer) > 0:
                 result = cw_decoder.analyze(buffer, SAMPLERATE)
-                self._update(in_progress_text=result.text if result.is_cw else "")
+                self._update(
+                    in_progress_text=result.text if result.is_cw else "",
+                    in_progress_morse=result.morse if result.is_cw else "",
+                    in_progress_wpm=result.wpm if result.is_cw else None,
+                    in_progress_tone_hz=result.tone_hz if result.is_cw else None,
+                    in_progress_confidence=result.confidence if result.is_cw else 0.0,
+                )
 
             chunk = self._record_chunk()
             if self._should_stop():

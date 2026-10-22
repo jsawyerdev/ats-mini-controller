@@ -835,6 +835,10 @@ def _monitor_state_dict(state) -> dict:
         "mode": state.mode,
         "current_freq_hz": state.current_freq_hz,
         "in_progress_text": state.in_progress_text,
+        "in_progress_morse": state.in_progress_morse,
+        "in_progress_wpm": state.in_progress_wpm,
+        "in_progress_tone_hz": state.in_progress_tone_hz,
+        "in_progress_confidence": state.in_progress_confidence,
         "in_progress_started_at": state.in_progress_started_at,
         "log": [
             {
@@ -844,6 +848,8 @@ def _monitor_state_dict(state) -> dict:
                 "text": e.text,
                 "morse": e.morse,
                 "wpm": e.wpm,
+                "tone_hz": e.tone_hz,
+                "confidence": e.confidence,
             }
             for e in state.log
         ],

@@ -54,6 +54,40 @@ def test_cw_self_test_is_explicitly_synthetic_and_passes() -> None:
     assert result["text"] == "SOS SOS"
 
 
+def test_cw_monitor_state_exposes_live_and_completed_quality() -> None:
+    state = SimpleNamespace(
+        running=True,
+        mode="locked",
+        current_freq_hz=14_100_000,
+        in_progress_text="CS3B",
+        in_progress_morse="-.-. ... ...-- -...",
+        in_progress_wpm=22.0,
+        in_progress_tone_hz=700.0,
+        in_progress_confidence=0.91,
+        in_progress_started_at=1.0,
+        log=[
+            SimpleNamespace(
+                freq_hz=14_100_000,
+                started_at=1.0,
+                ended_at=2.0,
+                text="CS3B",
+                morse="-.-. ... ...-- -...",
+                wpm=22.0,
+                tone_hz=700.0,
+                confidence=0.91,
+            )
+        ],
+        version=3,
+    )
+
+    result = app._monitor_state_dict(state)
+
+    assert result["in_progress_tone_hz"] == 700.0
+    assert result["in_progress_confidence"] == 0.91
+    assert result["log"][0]["tone_hz"] == 700.0
+    assert result["log"][0]["confidence"] == 0.91
+
+
 def test_health_reports_radio_readiness() -> None:
     response = Response()
     original_bridge = app.bridge
