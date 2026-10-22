@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 DB_PATH = Path(__file__).parent / "data" / "stations.db"
 SIGNAL_DB_PATH = Path(__file__).parent / "data" / "signal_cache.db"
 RECORDINGS_PATH = Path(__file__).parent / "data" / "recordings"
-APP_VERSION = "2.8.1"
+APP_VERSION = "2.8.2"
 
 MIN_VIABLE_FM_SIGNAL_DB = 6
 MIN_VIABLE_DIRECT_SIGNAL_DB = 10
@@ -456,6 +456,16 @@ def spectrum() -> dict:
         "span_hz": IQ_SAMPLE_RATE,
         "power_dbfs": radio.spectrum(),
     }
+
+
+@app.get("/api/spectrum/stream")
+async def spectrum_stream(request: Request) -> StreamingResponse:
+    async def gen():
+        while not await request.is_disconnected():
+            yield f"data: {json.dumps(spectrum(), separators=(',', ':'))}\n\n"
+            await asyncio.sleep(0.2)
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 class IqRecordingRequest(BaseModel):

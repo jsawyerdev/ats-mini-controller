@@ -905,6 +905,7 @@ async function stopScanForReceiverAction() {
 }
 
 gainSelectEl.addEventListener('change', async () => {
+  if (!await stopScanForReceiverAction()) return;
   const response = await fetch('/api/radio/gain', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ gain_db: Number(gainSelectEl.value) }),
@@ -971,10 +972,8 @@ recordIqBtn.addEventListener('click', async () => {
   }
 });
 
-async function updateWaterfall() {
+function drawWaterfall(result) {
   if (document.hidden) return;
-  try {
-    const result = await fetch('/api/spectrum').then(response => response.json());
     const bins = result.power_dbfs || [];
     if (!bins.length) return;
     const context = waterfallEl.getContext('2d');
@@ -988,11 +987,9 @@ async function updateWaterfall() {
       context.fillStyle = `rgb(${red},${green},${blue})`;
       context.fillRect(index * width, 0, Math.ceil(width), 1);
     });
-  } catch (_) {
-    // Status stream reports receiver loss; the waterfall can remain on its last valid row.
-  }
 }
-setInterval(updateWaterfall, 250);
+const spectrumEvents = new EventSource('/api/spectrum/stream');
+spectrumEvents.onmessage = event => drawWaterfall(JSON.parse(event.data));
 
 pagePrevEl.addEventListener('click', () => { pageOffset = Math.max(0, pageOffset - PAGE_SIZE); refresh(); });
 pageNextEl.addEventListener('click', () => { pageOffset += PAGE_SIZE; refresh(); });

@@ -171,6 +171,15 @@ served over the unauthenticated web interface; retrieve them from the Pi filesys
 
 ### Unreleased
 
+### 2.8.2 - 2026-10-22
+
+#### Fixed
+
+- Stream waterfall rows over one server-sent event connection instead of generating four HTTP
+  access-log entries per browser per second.
+- Gain changes now use the same scan-interruption confirmation as calibration and IQ recording,
+  preserving fixed-gain scan comparability.
+
 ### 2.8.1 - 2026-10-22
 
 #### Fixed
